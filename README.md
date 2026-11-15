@@ -39,6 +39,12 @@ npm test
 npm run build
 ```
 
+`npm run test:vscode` runs **Ripple: Smoke Test** inside a real VS Code Extension
+Development Host (allow and deny paths). It needs TrueForge running as in step 1; it starts
+a scripted mock model on `127.0.0.1:8792` and registers it in TrueForge as the provider
+`ripple-mock`, so no API key is needed. The mock is a test fixture; the extension never
+talks to a model.
+
 ## Starting point and borrowed code
 
 Ripple was started from an empty repository. No code was copied from other projects.

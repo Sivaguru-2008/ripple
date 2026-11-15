@@ -66,6 +66,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log(`[trueforge] registered MCP server 'ripple' at ${baseUrl()}`);
   })().catch((err: unknown) => {
     log(`[trueforge] could not register MCP server at ${baseUrl()}: ${String(err)}`);
+    if (String(err).includes('Outbound URL blocked')) {
+      log(`[trueforge] fix: restart TrueForge with OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1"]' (see README)`);
+    }
     throw err;
   });
 

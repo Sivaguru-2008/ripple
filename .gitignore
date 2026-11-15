@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+*.vsix
+.vscode-test/
+
+# Local TrueForge/model config may hold secrets. Only the example is committed.
+config/*.json
+!config/*.example.json
+
+.env
+.env.*

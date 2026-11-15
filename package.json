@@ -1,0 +1,55 @@
+{
+  "name": "ripple",
+  "displayName": "Ripple",
+  "description": "A coding agent for VS Code whose agent loop runs on TrueForge.",
+  "version": "0.0.1",
+  "publisher": "ripple-dev",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "ripple.smokeTest",
+        "title": "Ripple: Smoke Test"
+      }
+    ],
+    "configuration": {
+      "title": "Ripple",
+      "properties": {
+        "ripple.trueforgeBaseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8790",
+          "description": "Base URL of the local TrueForge server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@truefoundry/trueforge-sdk": "0.185.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.95.0",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vitest": "5.1.0"
+  }
+}

@@ -7,6 +7,13 @@ const SMOKE_PROMPT = 'Read README.md, then propose adding one line to it.';
 
 let mcp: RunningMcpServer | undefined;
 
+interface SmokeTestOptions {
+  /** Agent definition to use instead of agents/ripple-agent.json. */
+  agentPath?: string;
+  /** Answer approvals without the notification. */
+  approve?: 'allow' | 'deny';
+}
+
 function workspaceRoot(): string {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) throw new Error('open a folder first');
@@ -63,22 +70,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('ripple.smokeTest', async () => {
+    // `options` is for the integration test only; the palette passes nothing.
+    vscode.commands.registerCommand('ripple.smokeTest', async (options?: SmokeTestOptions) => {
       output.show(true);
+      const lines: string[] = [];
+      const record = (line: string): void => {
+        lines.push(line);
+        log(line);
+      };
       const tf = new TrueForgeClient(baseUrl());
       try {
         await registration.catch(() => tf.registerMcpServer(mcp!.url, mcp!.token));
-        const specUri = vscode.Uri.joinPath(context.extensionUri, 'agents', 'ripple-agent.json');
+        const specUri = options?.agentPath
+          ? vscode.Uri.file(options.agentPath)
+          : vscode.Uri.joinPath(context.extensionUri, 'agents', 'ripple-agent.json');
         const raw: unknown = JSON.parse(new TextDecoder('utf-8').decode(await vscode.workspace.fs.readFile(specUri)));
         const spec = parseAgentSpec(raw);
         const sessionId = await tf.createSession(spec);
-        log(`[trueforge] session ${sessionId} (model ${spec.model.name})`);
-        log(`[trueforge] → user.message "${SMOKE_PROMPT}"`);
-        const outcome = await tf.runTurn(sessionId, SMOKE_PROMPT, { log, decide: askApproval });
-        log(`[trueforge] turn finished: ${outcome.status}${outcome.message ? ` (${outcome.message})` : ''}`);
+        record(`[trueforge] session ${sessionId} (model ${spec.model.name})`);
+        record(`[trueforge] → user.message "${SMOKE_PROMPT}"`);
+        const approve = options?.approve;
+        const decide = approve
+          ? async (): Promise<ApprovalDecision> =>
+              approve === 'allow' ? { allow: true } : { allow: false, reason: 'denied by user' }
+          : askApproval;
+        const outcome = await tf.runTurn(sessionId, SMOKE_PROMPT, { log: record, decide });
+        record(`[trueforge] turn finished: ${outcome.status}${outcome.message ? ` (${outcome.message})` : ''}`);
+        return { outcome, lines };
       } catch (err) {
-        log(`[trueforge] smoke test failed: ${String(err)}`);
+        record(`[trueforge] smoke test failed: ${String(err)}`);
         void vscode.window.showErrorMessage(`Ripple smoke test failed: ${String(err)}`);
+        return { outcome: { status: 'failed', message: String(err) }, lines };
       }
     }),
   );

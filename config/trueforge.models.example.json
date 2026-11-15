@@ -1,0 +1,29 @@
+{
+  "_readme": "Example model providers for TrueForge. Ripple never reads keys and never calls a provider; configure these in TrueForge (Settings -> Models, or PUT the manifests with the TrueForge settings API). Copy to config/trueforge.models.json (git-ignored) if you want a local record. Shape follows the ModelProviderManifest type in @truefoundry/trueforge-sdk 0.185.0. All values are placeholders.",
+  "providers": [
+    {
+      "type": "anthropic",
+      "auth": { "api_key": "<YOUR_PRIMARY_PROVIDER_API_KEY>" },
+      "models": [
+        {
+          "name": "claude-sonnet-4-6",
+          "model_id": "<upstream-model-id>",
+          "properties": { "context_length": 200000, "max_output_tokens": 8192 }
+        }
+      ]
+    },
+    {
+      "type": "custom",
+      "name": "local",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "auth": { "api_key": "<optional>" },
+      "models": [
+        {
+          "name": "fallback-small",
+          "model_id": "<local-model-id>",
+          "properties": { "context_length": 32768, "max_output_tokens": 4096 }
+        }
+      ]
+    }
+  ]
+}

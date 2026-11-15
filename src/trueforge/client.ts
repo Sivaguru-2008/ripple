@@ -120,11 +120,18 @@ export class TrueForgeClient {
       let paused = false;
       let deltaText = '';
       let deltaCount = 0;
+      let deltaMessageId: string | undefined;
       const flushDeltas = (): void => {
         if (deltaCount === 0) return;
-        handlers.log(`model.message.delta ×${deltaCount}: ${truncate(deltaText, 400)}`);
+        // Tool calls arrive in deltas; show them once merged into the base message.
+        const calls = (deltaMessageId ? messages.get(deltaMessageId)?.toolCalls : undefined) ?? [];
+        const callText = calls.length
+          ? ` toolCalls=[${calls.map((c) => `${c.function.name}(${truncate(c.function.arguments, 120)})`).join(', ')}]`
+          : '';
+        handlers.log(`model.message.delta ×${deltaCount}:${callText} ${truncate(deltaText, 400)}`.trimEnd());
         deltaText = '';
         deltaCount = 0;
+        deltaMessageId = undefined;
       };
 
       for await (const event of stream) {
@@ -133,6 +140,7 @@ export class TrueForgeClient {
         if (isEventDelta(event)) {
           const base = messages.get(event.id);
           if (base) mergeEventDelta(base, event);
+          deltaMessageId = event.id;
           deltaText += event.content ?? '';
           deltaCount++;
           continue;

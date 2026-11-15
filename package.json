@@ -28,8 +28,8 @@
       "properties": {
         "ripple.trueforgeBaseUrl": {
           "type": "string",
-          "default": "http://127.0.0.1:8790",
-          "description": "Base URL of the local TrueForge server."
+          "default": "http://localhost:8790",
+          "description": "Base URL of the local TrueForge server. Use localhost, not 127.0.0.1: on Windows TrueForge listens on ::1 only."
         }
       }
     }

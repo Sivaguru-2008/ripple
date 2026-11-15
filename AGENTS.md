@@ -189,7 +189,10 @@ Other facts: `preload: false` (default) hides tools behind meta tools `list_tool
 `get_tool_info`, `get_tool_output_schema`, `call_tool`; deferred calls arrive as `call_tool`
 with `mcp_server` and `tool_name` arguments
 (https://trueforge.dev/key-features/deferred-tool-loading). Server listens on
-`http://localhost:8790`. The SDK's CJS build cannot be `require`d by Node (package is
+`http://localhost:8790`; observed on Windows: it binds `[::1]` only, so `127.0.0.1:8790`
+is refused. Ripple's default base URL is therefore `http://localhost:8790`.
+Observed with 0.185.1: a denied call never reaches the MCP server; the model receives a
+`tool.response` with `User denied tool call: <reason>` and the turn ends `done`. The SDK's CJS build cannot be `require`d by Node (package is
 `"type": "module"`); esbuild bundles the ESM build, which is fine.
 
 Pinned versions: TrueForge `0.185.1`, SDK `@truefoundry/trueforge-sdk 0.185.0`,
@@ -210,7 +213,7 @@ MCP SDK `@modelcontextprotocol/sdk 1.32.2` (fill in on day 1; do not upgrade aft
 
 | Day | Gate | State |
 |---|---|---|
-| Mon 16 Nov | Tool call round-trips through TrueForge; approval event reaches the extension | Not started |
+| Mon 16 Nov | Tool call round-trips through TrueForge; approval event reaches the extension | Passed headless against TrueForge 0.185.1 with a scripted mock model (read_file, pause, allow and deny both work, no disk writes). Still to do: one run in the F5 host with a real model |
 | Tue 17 Nov | Task A passes; cancelled run leaves `git status` clean | Not started |
 | Wed 18 Nov | Task B passes with receipt visible | Not started |
 | Thu 19 Nov | Task C passes; Task B 8 of 10; README works from clean clone | Not started |

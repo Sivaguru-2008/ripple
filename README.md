@@ -15,12 +15,29 @@ Status: Day 1, round trip only (session, streamed turn, MCP tool call, approval 
    $env:OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1"]'; npx @truefoundry/trueforge@0.185.1
    ```
 
+   `OUTBOUND_URL_ALLOWED_HOSTS` lifts TrueForge's SSRF guard for loopback only; without it
+   TrueForge refuses to connect to `http://127.0.0.1:<port>/mcp`.
 2. Open http://localhost:8790, go to **Settings → Models**, and add a provider. Then edit
    `model.name` in `agents/ripple-agent.json` to a model you configured
    (format `provider/model`). Keys stay in TrueForge, never in this repo.
-3. `npm install`, then open this folder in VS Code and press **F5**.
-4. In the Extension Development Host, run **Ripple: Smoke Test** from the Command Palette
-   and watch the **Ripple** output channel.
+3. `npm install`, then open this folder in VS Code and press **F5** (runs `npm run build`
+   first). On activation Ripple starts its MCP server and registers it in TrueForge as
+   the connector `ripple`.
+4. In the Extension Development Host, open any folder that has a `README.md`, run
+   **Ripple: Smoke Test** from the Command Palette, and watch the **Ripple** output channel.
+   Click **Allow** or **Deny** on the notification when the agent wants `propose_write`.
+   Nothing is written to disk either way.
+
+The `ripple.trueforgeBaseUrl` setting defaults to `http://localhost:8790`. Use `localhost`,
+not `127.0.0.1`: on Windows TrueForge listens on `::1` only.
+
+## Development
+
+```powershell
+npm run typecheck
+npm test
+npm run build
+```
 
 ## Starting point and borrowed code
 

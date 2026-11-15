@@ -22,7 +22,7 @@ async function readText(relPath: string): Promise<string> {
 }
 
 function baseUrl(): string {
-  return vscode.workspace.getConfiguration('ripple').get<string>('trueforgeBaseUrl', 'http://127.0.0.1:8790');
+  return vscode.workspace.getConfiguration('ripple').get<string>('trueforgeBaseUrl', 'http://localhost:8790');
 }
 
 async function askApproval(call: PendingToolCall): Promise<ApprovalDecision> {

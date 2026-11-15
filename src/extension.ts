@@ -39,9 +39,11 @@ async function askApproval(call: PendingToolCall): Promise<ApprovalDecision> {
   } catch {
     // keep raw arguments
   }
-  const choice = await vscode.window.showInformationMessage(
+  // Modal so it cannot be hidden by Do Not Disturb or a collapsed notification centre.
+  // Closing the dialog (Cancel / Esc) counts as Deny.
+  const choice = await vscode.window.showWarningMessage(
     `Ripple: the agent wants to run ${call.toolName}. Allow it?`,
-    { modal: false, detail },
+    { modal: true, detail },
     'Allow',
     'Deny',
   );
@@ -96,7 +98,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const decide = approve
           ? async (): Promise<ApprovalDecision> =>
               approve === 'allow' ? { allow: true } : { allow: false, reason: 'denied by user' }
-          : askApproval;
+          : async (call: PendingToolCall): Promise<ApprovalDecision> => {
+              record(`[ripple] waiting for your Allow/Deny on ${call.toolName} (dialog)`);
+              return askApproval(call);
+            };
         const outcome = await tf.runTurn(sessionId, SMOKE_PROMPT, { log: record, decide });
         record(`[trueforge] turn finished: ${outcome.status}${outcome.message ? ` (${outcome.message})` : ''}`);
         return { outcome, lines };

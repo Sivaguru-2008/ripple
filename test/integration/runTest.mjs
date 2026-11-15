@@ -4,6 +4,8 @@
 // Prerequisite (separate terminal):
 //   $env:OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1"]'; npx @truefoundry/trueforge@0.185.1
 // Then: npm run test:vscode
+// With a real model already configured in TrueForge (no mock):
+//   $env:RIPPLE_TEST_MODEL='ollama/qwen-coder-tools-7b'; npm run test:vscode
 //
 // Side effect: adds (or updates) a custom model provider "ripple-mock" in that TrueForge.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -26,21 +28,28 @@ async function main() {
     throw new Error(`TrueForge is not reachable at ${baseUrl}; start it first (see header of this file)`);
   }
 
-  const mock = await startMockModel(mockPort);
-  const tf = new TrueForge({ baseUrl });
-  await tf.settings.modelProviders.createOrUpdate({
-    manifest: {
-      type: 'custom',
-      name: 'ripple-mock',
-      baseUrl: `http://127.0.0.1:${mockPort}/v1`,
-      auth: { apiKey: 'unused' },
-      models: [{ name: 'mock-1', modelId: 'mock-1', properties: { contextLength: 32000, maxOutputTokens: 1000 } }],
-    },
-  });
+  // RIPPLE_TEST_MODEL names a model already configured in TrueForge (provider/model).
+  // Without it, the scripted mock is started and registered.
+  const realModel = process.env.RIPPLE_TEST_MODEL;
+  let mock;
+  if (!realModel) {
+    mock = await startMockModel(mockPort);
+    const tf = new TrueForge({ baseUrl });
+    await tf.settings.modelProviders.createOrUpdate({
+      manifest: {
+        type: 'custom',
+        name: 'ripple-mock',
+        baseUrl: `http://127.0.0.1:${mockPort}/v1`,
+        auth: { apiKey: 'unused' },
+        models: [{ name: 'mock-1', modelId: 'mock-1', properties: { contextLength: 32000, maxOutputTokens: 1000 } }],
+      },
+    });
+  }
 
   const tmp = mkdtempSync(path.join(tmpdir(), 'ripple-it-'));
   const agent = JSON.parse(readFileSync(path.join(root, 'agents', 'ripple-agent.json'), 'utf-8'));
-  agent.model = { name: 'ripple-mock/mock-1' };
+  agent.model = { name: realModel ?? 'ripple-mock/mock-1' };
+  console.log(`Model: ${agent.model.name}`);
   const agentPath = path.join(tmp, 'agent.json');
   writeFileSync(agentPath, JSON.stringify(agent, null, 2));
 
@@ -76,7 +85,7 @@ async function main() {
     });
     console.log('Integration test passed.');
   } finally {
-    mock.close();
+    mock?.close();
   }
 }
 

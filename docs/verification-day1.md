@@ -22,13 +22,40 @@ Development Host) and headless scripts using the same `src/` modules.
 | Cancel (paused turn) | `sessions.cancel` → turn state `cancelled` (reason starting `client-cancell…`). A late `createTurnEvents` gets HTTP 409 `Turn is not accepting events`; nothing ran. `runTurn` does not yet handle that 409. Cancel of a running turn not yet tested. | headless script |
 | Token deltas | `model.message.delta`; tool calls also arrive only in deltas and must be merged into the base `model.message` (`mergeEventDelta`). | all runs |
 
+## Real local model
+
+`RIPPLE_TEST_MODEL=ollama/qwen-coder-tools-7b npm run test:vscode` passed (allow and deny,
+README unchanged), in a real VS Code host, against a local 7B model on Ollama 0.40.16.
+
+Getting there:
+
+- Stock `qwen2.5-coder:7b` returns tool calls as bare JSON text in `content`, never in
+  `tool_calls`, even with a firm system prompt at temperature 0. Its template asks for
+  `<tool_call>` tags the model does not emit, so Ollama does not parse them.
+- Fix, no download: a derived local model `qwen2.5-coder-tools:7b` (`ollama create` from
+  `ollama show qwen2.5-coder:7b --modelfile`, with the `<tool_call>` tags removed from the
+  template's tool section). Ollama then returns real `tool_calls`. Remove with
+  `ollama rm qwen2.5-coder-tools:7b`.
+- Registered in TrueForge as custom provider `ollama`
+  (`base_url http://127.0.0.1:11434/v1`), model `qwen-coder-tools-7b`.
+- `llama3:latest` is rejected by Ollama: "does not support tools". LM Studio's
+  `qwen2.5-coder-14b-instruct` could not load (about 9 GB, 3 to 6 GB RAM free).
+
+What the small model did, which matters for Days 2 to 4:
+
+- It copied the `read_file` line-number gutter into `new_text` (`"4  This is a new line."`).
+  Consider a gutter the model will not copy, or strip a leading `N  ` in `propose_write`.
+- After an allowed `propose_write` it read the file again and proposed the same edit a
+  second time, with epoch 1 instead of 0. Stale-epoch rejection and idempotent hunk IDs
+  (AGENTS.md section 3) cover this; the instructions should say the run's epoch clearly.
+- It told the user the file "has been updated" once, despite instructions to say staged.
+- Warm, a full turn takes about 3 s. Cold load can exceed TrueForge's ~60 s headers
+  timeout (`Headers Timeout Error`).
+
 ## Not yet verified
 
 - A hand click on the Allow/Deny notification. The integration test answers approvals
   through a test-only command argument; the notification code path (`askApproval`) has not
   been clicked. Computer use was not available in this session.
-- A real LLM end to end. Local `qwen2.5-coder:7b` (Ollama 0.40.16) returns tool calls as
-  JSON text in `content`, not in `tool_calls`, so TrueForge ends the turn after one message.
-  This is the model's template, reproduced directly against Ollama. LM Studio's
-  `qwen2.5-coder-14b-instruct` could not load (about 9 GB needed, 5.6 GB RAM free).
 - `preload_tools` (deferred tool loading); the Day 1 agent uses `preload: true`.
+- Cancel of a running (not paused) turn.

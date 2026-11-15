@@ -39,13 +39,13 @@ export async function run(): Promise<void> {
   assert.ok(has(allowed.lines, /^tool\.approval_required/), 'no approval event');
   assert.ok(has(allowed.lines, /^turn\.update status=paused/), 'turn did not pause');
   assert.ok(has(allowed.lines, /user\.tool_approval .* allow/), 'approval not sent');
-  assert.ok(has(allowed.lines, /^tool\.response .*staged: 1 edit/), 'propose_write did not run');
+  assert.ok(has(allowed.lines, /^tool\.response .*staged: \d+ edit/), 'propose_write did not run');
   assert.equal(await readme(), before, 'README changed on disk');
 
   const denied = await smoke('deny');
   assert.equal(denied.outcome.status, 'done', denied.outcome.message);
   assert.ok(has(denied.lines, /user\.tool_approval .* deny/), 'denial not sent');
   assert.ok(has(denied.lines, /User denied tool call/), 'agent was not told about the denial');
-  assert.ok(!has(denied.lines, /staged: 1 edit/), 'propose_write ran despite deny');
+  assert.ok(!has(denied.lines, /staged: \d+ edit/), 'propose_write ran despite deny');
   assert.equal(await readme(), before, 'README changed on disk');
 }

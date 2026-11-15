@@ -137,66 +137,81 @@ Must work with any model TrueForge is configured with, including a small local o
 
 ## 9. Open R&D questions (answer before building on them; record answers here)
 
+All answers below were **verified by running them** on 16 Nov against TrueForge
+0.185.1 (isolated SQLite), in a real VS Code 1.142 Extension Development Host
+(`npm run test:vscode`) and in headless scripts using the same `src/` modules.
+Models: a scripted mock, and a real local `qwen2.5-coder` 7B on Ollama.
+Full evidence: `docs/verification-day1.md`.
+
 - [x] Exact approval event names and resume call in the pinned SDK version
       (the 0.185.0 release changed the turn lifecycle).
-      **Answer:** the stream emits `tool.approval_required` (`toolCalls: [{id, sourceEventId}]`,
-      `threadId`), then `turn.update` with `state.status: "paused"`; the stream stays open.
-      Stop reading at the pause, call `client.sessions.subscribeToTurn(sessionId, turnId,
-      { afterEventId: lastEventId })` first, then `client.sessions.createTurnEvents(sessionId,
+      **Answer:** stream opens with `turn.created` (gives `turnId`). Approval
+      needed → `tool.approval_required` (`toolCalls: [{ id, sourceEventId }]`,
+      `threadId`), then `turn.update` with `state.status: "paused"`. Resume on the
+      same turn: (1) `client.sessions.subscribeToTurn(sessionId, turnId,
+      { afterEventId: lastEventId })`, (2) `client.sessions.createTurnEvents(sessionId,
       turnId, { events: [{ type: 'user.tool_approval', threadId, toolCallId,
-      approval: { status: 'allow' } | { status: 'deny', reason } }] })`, then read the
-      subscription until `turn.done`. `turnId` comes from the opening `turn.created` event.
-      Sources: https://trueforge.dev/announcements/turn-lifecycle-0-185-0 ,
-      https://trueforge.dev/api/use-agent , SDK 0.185.0 types (`ApprovalAllow`, `ApprovalDeny`,
-      `UserToolApprovalInputEvent`, `ToolApprovalRequiredEvent`).
+      approval: { status: 'allow' } | { status: 'deny', reason } }] })`, (3) read the
+      subscription to `turn.done`. Verified for allow and deny. A denied call never
+      reaches the MCP server; the model gets `tool.response`
+      `User denied tool call: <reason>` and the turn ends `done`.
+      Docs: https://trueforge.dev/announcements/turn-lifecycle-0-185-0 ,
+      https://trueforge.dev/api/use-agent
 - [x] How a local MCP server is registered, and the localhost allowlist setting.
-      **Answer:** register via `client.settings.mcpServers.createOrUpdate({ manifest: { name,
-      description, type: 'remote', url, auth: { type: 'header', headers: { Authorization:
-      'Bearer …' } } } })` (UI equivalent: Settings → Connectors → Add MCP Server). Agents then
-      attach it by name in `mcp_servers`. Transport is streamable HTTP (SSE fallback).
-      Sources: https://trueforge.dev/mcp-servers , SDK 0.185.0 `reference.md` ("Settings
-      McpServers") and types `RemoteMcpServerManifest`, `McpServerHeaderAuth`.
-      **Allowlist (not in the docs; read from the shipped code):** TrueForge's outbound SSRF
-      guard denies `127.0.0.0/8`, private ranges and dot-less hosts such as `localhost`.
-      Start the server with env `OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1"]'` (JSON string
-      array) so it can reach the extension. Found in `@truefoundry/trueforge@0.185.1`
-      `dist/main.js` (env parsing) and `@truefoundry/trueforge-core@0.185.1`
-      `dist/core/util/ssrfGuard.js`. `NETWORK_POLICY_ENABLED=false` would disable the guard
-      entirely; do not use it.
+      **Answer:** `client.settings.mcpServers.createOrUpdate({ manifest: { type:
+      'remote', name, description, url, auth: { type: 'header', headers:
+      { Authorization: 'Bearer …' } } } })`, then attach by name in the agent's
+      `mcp_servers`. Verified: `mcp.initialize servers=[ripple:streamable-http]`.
+      **Allowlist (not in the docs; found in the shipped server code):** start
+      TrueForge with `OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1"]'`. Verified: without
+      it, registration fails with HTTP 400 `Outbound URL blocked for host
+      "127.0.0.1"`; the extension logs the fix when it sees this. Do not use
+      `NETWORK_POLICY_ENABLED=false`.
+      **Also verified:** on Windows TrueForge listens on `[::1]` only, so
+      `127.0.0.1:8790` is refused. Clients must use `http://localhost:8790`.
+      Docs: https://trueforge.dev/mcp-servers , SDK `reference.md` "Settings McpServers".
 - [x] Whether `require_approval_for_tools` can force approval per tool.
-      **Answer:** yes. It accepts `@all`, `@write`, `@destructive` or literal tool names;
-      default `["@write", "@destructive"]`. `@write` = MCP annotation `readOnlyHint: false`
-      and `destructiveHint` not true; unannotated tools skip approval unless named.
-      Ripple names `propose_write` literally and annotates it as write.
-      Sources: https://trueforge.dev/create-agent/overview , SDK type `McpServer`,
-      `trueforge-core/dist/core/mcp/toolSelectors.js`.
-- [ ] Whether TrueForge supports model fallback natively; if not, how to switch
+      **Answer:** yes. Accepts `@all`, `@write`, `@destructive` or literal names;
+      default `["@write", "@destructive"]`. Verified: `["propose_write"]` pauses
+      `propose_write` and not `read_file`. Use literal names.
+      Docs: https://trueforge.dev/create-agent/overview
+- [x] Whether TrueForge supports model fallback natively; if not, how to switch
       the model on a session via the API.
-      **Answer (partial):** no native fallback is documented (https://trueforge.dev/models
-      says automatic per-turn model selection is "planned"; nothing in the docs index or in
-      `trueforge-core` mentions fallback). Candidate switch: `client.sessions.update(sessionId,
-      { agent: { spec } })` accepts a full agent spec (SDK `UpdateSessionRequest`), but the docs
-      do not say whether it changes the model for the next turn. Verify on Thursday before Task C.
+      **Answer:** no native failover (https://trueforge.dev/models calls automatic
+      selection "planned"). Verified switch: an unreachable model ends the turn with
+      `turn.done status=error`, `[Model Error] Cannot connect to API: bad port`, in
+      126 ms. `client.sessions.update(sessionId, { agent: { spec } })` with another
+      model, then a new turn on the same session, completes `done` on the new model.
+      A cold local model can also fail after about 60 s with `Headers Timeout Error`;
+      fallback must treat that as a failure too.
 - [x] Which event carries token deltas and how to cancel a running turn.
-      **Answer:** `model.message.delta` (`content` string) after a `model.message` base event
-      with the same `id`; merge with `isEventDelta` / `mergeEventDelta`. Cancel with
-      `client.sessions.cancel(sessionId)`; it also cancels paused turns, and the stream ends
-      with `turn.done` (`state.status: "cancelled"`).
-      Sources: https://trueforge.dev/api/quickstart , https://trueforge.dev/api/use-agent ,
-      https://trueforge.dev/announcements/turn-lifecycle-0-185-0 .
+      **Answer:** `model.message.delta` (`content`, plus `toolCalls` fragments),
+      after a `model.message` with the same `id`; merge with `mergeEventDelta`.
+      Verified: tool calls arrive only in deltas. Cancel: `client.sessions.cancel(
+      sessionId)`. Verified on a **paused** turn: state becomes `cancelled`, and a
+      late `createTurnEvents` gets HTTP 409 `Turn is not accepting events` (the
+      client must treat that 409 as already cancelled; not yet handled).
+      **Not yet verified:** cancel of a running turn.
+      Docs: https://trueforge.dev/api/quickstart , https://trueforge.dev/api/use-agent
 
-Other facts: `preload: false` (default) hides tools behind meta tools `list_tools`,
-`get_tool_info`, `get_tool_output_schema`, `call_tool`; deferred calls arrive as `call_tool`
-with `mcp_server` and `tool_name` arguments
-(https://trueforge.dev/key-features/deferred-tool-loading). Server listens on
-`http://localhost:8790`; observed on Windows: it binds `[::1]` only, so `127.0.0.1:8790`
-is refused. Ripple's default base URL is therefore `http://localhost:8790`.
-Observed with 0.185.1: a denied call never reaches the MCP server; the model receives a
-`tool.response` with `User denied tool call: <reason>` and the turn ends `done`. The SDK's CJS build cannot be `require`d by Node (package is
-`"type": "module"`); esbuild bundles the ESM build, which is fine.
+Other verified facts:
+- Small local models: stock `qwen2.5-coder:7b` on Ollama writes tool calls as JSON
+  text, not `tool_calls`. A derived local model `qwen2.5-coder-tools:7b` (template
+  without `<tool_call>` tags) fixes it; registered in TrueForge as custom provider
+  `ollama` at `http://127.0.0.1:11434/v1`. `llama3` is rejected ("does not support
+  tools").
+- With that model the agent copied the `read_file` line-number gutter into
+  `new_text`, re-proposed the same edit after approval with epoch 1 instead of 0,
+  and once claimed the file "has been updated". Fenced transactions (section 3)
+  must handle all three.
+- `preload: false` (default) hides tools behind `list_tools`, `get_tool_info`,
+  `get_tool_output_schema`, `call_tool`. Not yet run: the Day 1 agent uses
+  `preload: true`.
+- The SDK's CJS build cannot be `require`d by Node; esbuild bundles its ESM build.
 
-Pinned versions: TrueForge `0.185.1`, SDK `@truefoundry/trueforge-sdk 0.185.0`,
-MCP SDK `@modelcontextprotocol/sdk 1.32.2` (fill in on day 1; do not upgrade after).
+Pinned versions: TrueForge `0.185.1` (start as `npx @truefoundry/trueforge@0.185.1`),
+SDK `@truefoundry/trueforge-sdk 0.185.0`, MCP SDK `@modelcontextprotocol/sdk 1.32.2`.
+Do not upgrade.
 
 ## 10. Working rules for agents
 
@@ -213,7 +228,7 @@ MCP SDK `@modelcontextprotocol/sdk 1.32.2` (fill in on day 1; do not upgrade aft
 
 | Day | Gate | State |
 |---|---|---|
-| Mon 16 Nov | Tool call round-trips through TrueForge; approval event reaches the extension | Passed headless against TrueForge 0.185.1 with a scripted mock model (read_file, pause, allow and deny both work, no disk writes). Still to do: one run in the F5 host with a real model |
+| Mon 16 Nov | Tool call round-trips through TrueForge; approval event reaches the extension | **Passed.** In a real VS Code host with the mock and with a local qwen2.5-coder 7B: `read_file`, approval pause, allow and deny, README unchanged on disk. Still to do by hand: click Allow/Deny on the notification (the test answers through a test-only argument) |
 | Tue 17 Nov | Task A passes; cancelled run leaves `git status` clean | Not started |
 | Wed 18 Nov | Task B passes with receipt visible | Not started |
 | Thu 19 Nov | Task C passes; Task B 8 of 10; README works from clean clone | Not started |

@@ -82,6 +82,11 @@
           "default": true,
           "description": "Send a short warm-up turn through TrueForge on activation so a local model is loaded before the first edit."
         },
+        "ripple.fallbackModel": {
+          "type": "string",
+          "default": "ollama/qwen-coder-tools-7b",
+          "description": "Secondary model to take over automatically when the primary model fails."
+        },
         "ripple.perModelConfig": {
           "type": "object",
           "default": {},

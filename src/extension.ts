@@ -391,15 +391,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
       log(`[inline] ${path} lines ${startLine + 1}-${endLine}: ${instruction}`);
       try {
         const spec = await loadSpec(context, 'ripple-inline.json', options?.agentPath);
+        const fallbackModel = vscode.workspace.getConfiguration('ripple').get<string>('fallbackModel');
+        const fallbackSpec = fallbackModel && fallbackModel !== spec.model.name ? { ...spec, model: { ...spec.model, name: fallbackModel } } : undefined;
         const result = await runWithProgress('inline edit', (onDelta) =>
           runner.run({
             spec,
+            fallbackSpec,
             message: inlineMessage(path, doc.languageId, startLine, endLine, selected, instruction),
             selection: { path, startLine, endLine, text: selected },
             nudge:
               'You did not call the replace_selection tool, so nothing was proposed. Call the replace_selection tool now as a real tool call (not JSON or Markdown text) with the complete rewritten selected lines.',
             decideOther: askApproval,
             onDelta: (text) => onDelta(text),
+            onFallback: (fromModel, toModel, reason) => {
+              log(`[fallback] inline edit switched from ${fromModel} to ${toModel} (${reason})`);
+            },
           }),
         );
         log(`[inline] result: ${result.status}${result.message ? ` (${result.message})` : ''}`);
@@ -494,6 +500,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
         });
         log(`[budget] model ${modelName}: contextWindow=${adaptiveBudget.contextWindow}, reserved=${adaptiveBudget.reservedTokens}, retrievalBudget=${adaptiveBudget.effectiveBudget} (source: ${adaptiveBudget.source})`);
 
+        const fallbackModel = vscode.workspace.getConfiguration('ripple').get<string>('fallbackModel');
+        const fallbackSpec = fallbackModel && fallbackModel !== spec.model.name ? { ...spec, model: { ...spec.model, name: fallbackModel } } : undefined;
+
         // @file and @symbol mentions in the prompt are resolved now and pinned into context.
         const mentioned = await resolveMentions(parseMentions(instruction), diskSource(workspaceRoot(), openBufferText));
         if (mentioned.pins.length || mentioned.unresolved.length) log(`[agent] mentions:\n${describePins(mentioned)}`);
@@ -511,9 +520,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
         const result = await runWithProgress('agent task', (onDelta) =>
           runner.run({
             spec,
+            fallbackSpec,
             message,
             deferred: true,
             decideOther: approveCommand,
+            onFallback: (fromModel, toModel, reason) => {
+              log(`[fallback] agent task switched from ${fromModel} to ${toModel} (${reason})`);
+              panelProvider?.setStatus('running', `Switched to fallback model ${toModel}`);
+            },
             onSession: (runId, sessionId) => {
               panelRunId = runId;
               pinsByRun.set(runId, mentioned.pins);

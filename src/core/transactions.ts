@@ -253,6 +253,34 @@ export class TransactionManager {
   }
 
   /**
+   * Discards held/uncommitted proposals and resets staged text to disk for a run,
+   * keeping the run active (used during model fallback / retry to clear stale proposals).
+   */
+  discardUncommitted(runId: string, reason = 'retry with fresh model'): void {
+    const staged = this.stagedFiles.get(runId);
+    if (staged) {
+      for (const [, f] of staged) {
+        f.current = f.disk;
+      }
+    }
+    for (const p of this.proposals) {
+      if (p.runId !== runId) continue;
+      if (p.state === 'held' || p.state === 'reviewing' || p.state === 'decided') {
+        p.state = 'discarded';
+        for (const h of p.hunks) {
+          if (h.status === 'pending' || h.status === 'held' || h.status === 'accepted') {
+            h.status = 'failed';
+            h.reason = reason;
+          }
+        }
+        this.reviews.get(p.id)?.();
+        this.reviews.delete(p.id);
+      }
+    }
+    this.onDidChange?.();
+  }
+
+  /**
    * Writes everything the run holds as ONE edit across files. Called before an approved
    * command runs (so it tests the accepted edits) and when the run finishes. All or nothing:
    * if a file changed outside Ripple, nothing is written and the held hunks fail.

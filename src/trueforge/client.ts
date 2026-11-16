@@ -66,7 +66,7 @@ export interface TurnOutcome {
  */
 export function isRetryableModelError(message: string | undefined): boolean {
   if (!message) return false;
-  return /headers timeout|timed? ?out|cannot connect to api|econnrefused|econnreset|socket hang up|\b(429|502|503|504)\b|overloaded/i.test(
+  return /headers timeout|timed? ?out|cannot connect to api|econnrefused|econnreset|socket hang up|\b(429|502|503|504)\b|overloaded|connection failure|network error|failed to fetch/i.test(
     message,
   );
 }

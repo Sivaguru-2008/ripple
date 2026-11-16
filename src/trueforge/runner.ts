@@ -8,6 +8,8 @@ const WRITE_TOOLS = ['propose_write', 'replace_selection'] as const;
 
 export interface RunRequest {
   spec: TrueForgeApi.AgentSpec;
+  /** Configured fallback model specification if primary model fails. */
+  fallbackSpec?: TrueForgeApi.AgentSpec;
   message: string;
   selection?: SelectionTarget;
   /** When true, accepted hunks are held in memory across files until command or finish. */
@@ -18,6 +20,8 @@ export interface RunRequest {
   onToolCall?(call: ToolCallUpdate): void;
   /** Called once per attempt with the run and its TrueForge session. */
   onSession?(runId: string, sessionId: string): void;
+  /** Notified when primary model fails and runner falls back to secondary model. */
+  onFallback?(fromModel: string, toModel: string, reason: string): void;
   /**
    * Sent once as a follow-up turn on the same session when a turn ends without any write
    * tool call (small local models sometimes write the call as text).
@@ -63,25 +67,40 @@ export class Runner {
     if (this.current) throw new Error('A Ripple run is already in progress; cancel it first.');
     const { tx, tf, log } = this.deps;
     const maxAttempts = req.attempts ?? 2;
-    const runIds: string[] = [];
+
+    // Preserve the same run and transaction identity across recovery and fallback
+    const run = tx.beginRun(req.selection, { deferred: req.deferred });
+    const runIds: string[] = [run.id];
+    const current: { runId: string; sessionId?: string; cancelled: boolean } = { runId: run.id, cancelled: false };
+    this.current = current;
+
+    // The MCP URL carries this run's token, so every tool call is bound to this run
+    await tf.registerMcpServer(this.deps.mcpUrlForRun(run.token), this.deps.mcpBearer);
+
+    let activeSpec = req.spec;
+    let switchedToFallback = false;
+    let totalAttempts = 0;
+
     for (let attempt = 1; ; attempt++) {
-      const run = tx.beginRun(req.selection, { deferred: req.deferred });
-      runIds.push(run.id);
-      const current: { runId: string; sessionId?: string; cancelled: boolean } = { runId: run.id, cancelled: false };
-      this.current = current;
-      log(`[run] ${run.id} started (attempt ${attempt}/${maxAttempts}, model ${req.spec.model.name})`);
+      totalAttempts = attempt;
+      log(`[run] ${run.id} started (attempt ${attempt}, model ${activeSpec.model.name})`);
+
+      if (current.cancelled) {
+        return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: totalAttempts });
+      }
+
       let failure: string | undefined;
       try {
-        // The MCP URL carries this run's token, so every tool call is bound to this run.
-        await tf.registerMcpServer(this.deps.mcpUrlForRun(run.token), this.deps.mcpBearer);
-        const sessionId = await tf.createSession(req.spec);
+        const sessionId = await tf.createSession(activeSpec);
         current.sessionId = sessionId;
         log(`[trueforge] session ${sessionId}`);
         req.onSession?.(run.id, sessionId);
+
         if (current.cancelled) {
           await tf.cancel(sessionId).catch(() => undefined);
-          return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
+          return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: totalAttempts });
         }
+
         let writeCalls = 0;
         const turn = (text: string) => tf.runTurn(sessionId, text, {
           log,
@@ -106,38 +125,69 @@ export class Runner {
             return answer.allow ? { allow: true } : { allow: false, reason: answer.reason };
           },
         });
+
         let outcome = await turn(req.message);
         if (outcome.status === 'done' && writeCalls === 0 && req.nudge && !current.cancelled) {
           log(`[run] ${run.id} turn ended without a write tool call; sending one follow-up turn`);
           outcome = await turn(req.nudge);
         }
+
         log(`[run] ${run.id} turn finished: ${outcome.status}${outcome.message ? ` (${outcome.message})` : ''}`);
+
         if (current.cancelled || outcome.status === 'cancelled') {
-          return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
+          return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: totalAttempts });
         }
+
         if (outcome.status === 'done') {
           if (run.deferred) {
             const committed = await tx.commit(run.id);
             if (!committed.ok) {
-              return await this.end(run.id, 'failed', { status: 'error', message: committed.error, runIds, attempts: attempt });
+              return await this.end(run.id, 'failed', { status: 'error', message: committed.error, runIds, attempts: totalAttempts });
             }
             log(`[run] ${run.id} committed ${committed.hunks} hunks across ${committed.files.length} files`);
           }
-          return await this.end(run.id, 'finished', { status: 'done', runIds, attempts: attempt });
+          return await this.end(run.id, 'finished', { status: 'done', runIds, attempts: totalAttempts });
         }
+
         failure = outcome.message ?? outcome.status;
       } catch (err) {
-        if (current.cancelled) return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
+        if (current.cancelled) return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: totalAttempts });
         failure = err instanceof Error ? err.message : String(err);
         log(`[run] ${run.id} failed: ${failure}`);
       }
+
+      // Check if any proposals were already permanently applied
       const applied = tx.proposalsFor(run.id).some((p) => p.state === 'applied');
-      await this.end(run.id, 'failed', undefined);
-      if (isRetryableModelError(failure) && attempt < maxAttempts && !applied) {
-        log(`[run] retryable model error; retrying with a fresh run and session`);
+      if (applied) {
+        await this.end(run.id, 'failed', undefined);
+        return { status: 'error', message: failure, runIds, attempts: totalAttempts };
+      }
+
+      if (current.cancelled) {
+        return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: totalAttempts });
+      }
+
+      // Clean uncommitted or stale proposals from the failed attempt, keeping transaction run intact
+      tx.discardUncommitted(run.id, `failure on ${activeSpec.model.name}: ${failure}`);
+
+      // Bounded retries for transient/retryable errors on primary model
+      if (!switchedToFallback && isRetryableModelError(failure) && attempt < maxAttempts) {
+        log(`[run] retryable model error on ${activeSpec.model.name}; retrying on same transaction`);
         continue;
       }
-      return { status: 'error', message: failure, runIds, attempts: attempt };
+
+      // Automatic fallback to configured secondary model
+      if (!switchedToFallback && req.fallbackSpec && req.fallbackSpec.model.name !== activeSpec.model.name) {
+        const fromModel = activeSpec.model.name;
+        activeSpec = req.fallbackSpec;
+        switchedToFallback = true;
+        log(`[fallback] primary model ${fromModel} failed (${failure}); switching to fallback model ${activeSpec.model.name}`);
+        req.onFallback?.(fromModel, activeSpec.model.name, failure ?? 'primary model failure');
+        continue;
+      }
+
+      await this.end(run.id, 'failed', undefined);
+      return { status: 'error', message: failure, runIds, attempts: totalAttempts };
     }
   }
 

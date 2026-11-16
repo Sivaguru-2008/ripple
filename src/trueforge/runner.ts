@@ -1,0 +1,138 @@
+// One Ripple run = one TrueForge session + turn, bound to one TransactionManager run.
+// No `vscode` imports: the extension supplies the UI callbacks.
+import type { TrueForgeApi } from '@truefoundry/trueforge-sdk';
+import type { SelectionTarget, TransactionManager } from '../core/transactions';
+import { isRetryableModelError, type ApprovalDecision, type PendingToolCall, type TrueForgeClient } from './client';
+
+const WRITE_TOOLS = ['propose_write', 'replace_selection'] as const;
+
+export interface RunRequest {
+  spec: TrueForgeApi.AgentSpec;
+  message: string;
+  selection?: SelectionTarget;
+  /** Approval for tools that are not write tools (none in Task A). */
+  decideOther(call: PendingToolCall): Promise<ApprovalDecision>;
+  onDelta?(text: string, kind: 'content' | 'tool'): void;
+  /** Total attempts for retryable model errors (cold model, timeout). Default 2. */
+  attempts?: number;
+}
+
+export interface RunResult {
+  status: 'done' | 'cancelled' | 'error';
+  message?: string;
+  runIds: string[];
+  attempts: number;
+}
+
+export interface RunnerDeps {
+  tx: TransactionManager;
+  tf: TrueForgeClient;
+  /** URL to register for a run's token, plus the server's bearer token. */
+  mcpUrlForRun(runToken: string): string;
+  mcpBearer: string;
+  log(line: string): void;
+  /** Called when a run is cancelled, so the UI can close its reviews. */
+  onRunEnded?(runId: string, state: 'finished' | 'cancelled' | 'failed'): void;
+}
+
+/** Canonical write-tool name, whatever prefix TrueForge put on it. */
+export function writeToolName(name: string): (typeof WRITE_TOOLS)[number] | undefined {
+  return WRITE_TOOLS.find((t) => name === t || name.endsWith(`__${t}`) || name.endsWith(`.${t}`) || name.endsWith(`_${t}`));
+}
+
+export class Runner {
+  private current: { runId: string; sessionId?: string; cancelled: boolean } | undefined;
+
+  constructor(private readonly deps: RunnerDeps) {}
+
+  get busy(): boolean {
+    return this.current !== undefined;
+  }
+
+  async run(req: RunRequest): Promise<RunResult> {
+    if (this.current) throw new Error('A Ripple run is already in progress; cancel it first.');
+    const { tx, tf, log } = this.deps;
+    const maxAttempts = req.attempts ?? 2;
+    const runIds: string[] = [];
+    for (let attempt = 1; ; attempt++) {
+      const run = tx.beginRun(req.selection);
+      runIds.push(run.id);
+      const current: { runId: string; sessionId?: string; cancelled: boolean } = { runId: run.id, cancelled: false };
+      this.current = current;
+      log(`[run] ${run.id} started (attempt ${attempt}/${maxAttempts}, model ${req.spec.model.name})`);
+      let failure: string | undefined;
+      try {
+        // The MCP URL carries this run's token, so every tool call is bound to this run.
+        await tf.registerMcpServer(this.deps.mcpUrlForRun(run.token), this.deps.mcpBearer);
+        const sessionId = await tf.createSession(req.spec);
+        current.sessionId = sessionId;
+        log(`[trueforge] session ${sessionId}`);
+        if (current.cancelled) {
+          await tf.cancel(sessionId).catch(() => undefined);
+          return this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
+        }
+        const outcome = await tf.runTurn(sessionId, req.message, {
+          log,
+          ...(req.onDelta ? { onDelta: req.onDelta } : {}),
+          isCancelled: () => current.cancelled,
+          decide: async (call) => {
+            const tool = writeToolName(call.toolName);
+            if (!tool) return req.decideOther(call);
+            let args: unknown;
+            try {
+              args = JSON.parse(call.arguments || '{}');
+            } catch {
+              // Let the tool report the malformed arguments; nothing can be written.
+              return { allow: true };
+            }
+            const answer = await tx.reviewForApproval(run.id, tool, args);
+            return answer.allow ? { allow: true } : { allow: false, reason: answer.reason };
+          },
+        });
+        log(`[run] ${run.id} turn finished: ${outcome.status}${outcome.message ? ` (${outcome.message})` : ''}`);
+        if (current.cancelled || outcome.status === 'cancelled') {
+          return this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
+        }
+        if (outcome.status === 'done') return this.end(run.id, 'finished', { status: 'done', runIds, attempts: attempt });
+        failure = outcome.message ?? outcome.status;
+      } catch (err) {
+        if (current.cancelled) return this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
+        failure = err instanceof Error ? err.message : String(err);
+        log(`[run] ${run.id} failed: ${failure}`);
+      }
+      const applied = tx.proposalsFor(run.id).some((p) => p.state === 'applied');
+      this.end(run.id, 'failed', undefined);
+      if (isRetryableModelError(failure) && attempt < maxAttempts && !applied) {
+        log(`[run] retryable model error; retrying with a fresh run and session`);
+        continue;
+      }
+      return { status: 'error', message: failure, runIds, attempts: attempt };
+    }
+  }
+
+  /** Cancels the current run: staged hunks are discarded at once, then TrueForge is told. */
+  async cancel(): Promise<boolean> {
+    const current = this.current;
+    if (!current || current.cancelled) return false;
+    current.cancelled = true;
+    this.deps.log(`[run] ${current.runId} cancel requested`);
+    this.deps.tx.endRun(current.runId, 'cancelled');
+    this.deps.onRunEnded?.(current.runId, 'cancelled');
+    if (current.sessionId) {
+      try {
+        await this.deps.tf.cancel(current.sessionId);
+        this.deps.log(`[trueforge] sessions.cancel(${current.sessionId}) sent`);
+      } catch (err) {
+        this.deps.log(`[trueforge] sessions.cancel failed: ${String(err)}`);
+      }
+    }
+    return true;
+  }
+
+  private end<T>(runId: string, state: 'finished' | 'cancelled' | 'failed', result: T): T {
+    this.deps.tx.endRun(runId, state);
+    this.deps.onRunEnded?.(runId, state);
+    if (this.current?.runId === runId) this.current = undefined;
+    return result;
+  }
+}

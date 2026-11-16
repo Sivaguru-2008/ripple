@@ -21,11 +21,32 @@ export type ApprovalDecision = { allow: true } | { allow: false; reason?: string
 export interface TurnHandlers {
   log(line: string): void;
   decide(call: PendingToolCall): Promise<ApprovalDecision>;
+  /** Streamed text as it arrives: assistant content, or tool-call argument fragments. */
+  onDelta?(text: string, kind: 'content' | 'tool'): void;
+  /** True once the user cancelled; pending answers are then not sent. */
+  isCancelled?(): boolean;
 }
 
 export interface TurnOutcome {
   status: string;
   message?: string;
+}
+
+/**
+ * Model errors worth retrying: a cold local model (`Headers Timeout Error`), a provider
+ * that is briefly unreachable, rate limits and 5xx. Seen in Day 1 runs (AGENTS.md section 9).
+ */
+export function isRetryableModelError(message: string | undefined): boolean {
+  if (!message) return false;
+  return /headers timeout|timed? ?out|cannot connect to api|econnrefused|econnreset|socket hang up|\b(429|502|503|504)\b|overloaded/i.test(
+    message,
+  );
+}
+
+function httpStatus(err: unknown): number | undefined {
+  const e = err as { statusCode?: unknown; status?: unknown };
+  const code = e?.statusCode ?? e?.status;
+  return typeof code === 'number' ? code : undefined;
 }
 
 /** Parses an agent definition in TrueForge's wire format (snake_case JSON). */
@@ -104,6 +125,19 @@ export class TrueForgeClient {
   }
 
   /**
+   * Loads the model before the user's first request: a throwaway session with no tools,
+   * one short turn. A cold local model can otherwise exceed TrueForge's ~60 s headers timeout.
+   */
+  async warmUp(spec: TrueForgeApi.AgentSpec, log: (line: string) => void): Promise<TurnOutcome> {
+    const bare: TrueForgeApi.AgentSpec = { ...spec, instructions: 'Reply with the single word OK.', mcpServers: [] };
+    const sessionId = await this.createSession(bare);
+    return this.runTurn(sessionId, 'OK?', {
+      log,
+      decide: async () => ({ allow: false, reason: 'warm-up runs no tools' }),
+    });
+  }
+
+  /**
    * Sends one user message and follows the turn to `turn.done`, answering every
    * approval pause on the same turn (0.185.0 lifecycle).
    */
@@ -143,6 +177,11 @@ export class TrueForgeClient {
           deltaMessageId = event.id;
           deltaText += event.content ?? '';
           deltaCount++;
+          if (event.content) handlers.onDelta?.(event.content, 'content');
+          for (const call of event.toolCalls ?? []) {
+            const fragment = call.function?.arguments;
+            if (fragment) handlers.onDelta?.(fragment, 'tool');
+          }
           continue;
         }
         flushDeltas();
@@ -189,13 +228,23 @@ export class TrueForgeClient {
         }
       }
 
+      if (handlers.isCancelled?.()) return { status: 'cancelled', message: 'cancelled during review' };
       // Subscribe before sending so no output from the answer is missed.
       stream = await this.client.sessions.subscribeToTurn(
         sessionId,
         turnId,
         lastEventId ? { afterEventId: lastEventId } : {},
       );
-      await this.client.sessions.createTurnEvents(sessionId, turnId, { events: answers });
+      try {
+        await this.client.sessions.createTurnEvents(sessionId, turnId, { events: answers });
+      } catch (err) {
+        // A cancelled turn no longer accepts events (verified: HTTP 409).
+        if (httpStatus(err) === 409) {
+          handlers.log('createTurnEvents → 409 Turn is not accepting events: treating the turn as cancelled');
+          return { status: 'cancelled', message: 'turn no longer accepts events' };
+        }
+        throw err;
+      }
     }
   }
 }

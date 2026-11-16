@@ -268,18 +268,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
         void vscode.window.showInformationMessage('Ripple: no applied change to undo.');
         return false;
       }
-      const uri = fileUri(last.path);
-      const doc = await vscode.workspace.openTextDocument(uri);
-      if (doc.getText() !== last.after) {
-        void vscode.window.showWarningMessage(`Ripple: ${last.path} changed after Ripple's edit; use Ctrl+Z in the editor instead.`);
-        return false;
-      }
+      // One WorkspaceEdit restores every file the run wrote.
       const edit = new vscode.WorkspaceEdit();
-      edit.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), last.before);
+      const docs: vscode.TextDocument[] = [];
+      for (const f of last.files) {
+        const uri = fileUri(f.path);
+        const doc = await vscode.workspace.openTextDocument(uri);
+        if (doc.getText() !== f.after) {
+          void vscode.window.showWarningMessage(`Ripple: ${f.path} changed after Ripple's edit; use Ctrl+Z in the editor instead.`);
+          return false;
+        }
+        edit.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), f.before);
+        docs.push(doc);
+      }
       const ok = await vscode.workspace.applyEdit(edit);
-      if (ok) await doc.save();
+      if (ok) for (const doc of docs) await doc.save();
       tx.lastApplied = undefined;
-      log(`[undo] ${last.path} restored to its text before ${last.runId}`);
+      log(`[undo] ${last.files.map((f) => f.path).join(', ')} restored to the text before ${last.runId}`);
       return ok;
     }),
 

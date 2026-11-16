@@ -92,8 +92,8 @@ describe('staging and review', () => {
     expect(applied[0]?.edits).toHaveLength(2);
     expect(files['helpers.py']).toContain('"off", "n"');
     expect(files['helpers.py']).toContain('Off values');
-    expect(tx.lastApplied?.before).toBe(BASE);
-    expect(tx.lastApplied?.after).toBe(files['helpers.py']);
+    expect(tx.lastApplied?.files[0]?.before).toBe(BASE);
+    expect(tx.lastApplied?.files[0]?.after).toBe(files['helpers.py']);
   });
 
   it('partial accept writes only the accepted hunk and reports the rejection reason', async () => {
@@ -330,5 +330,120 @@ describe('diff helpers', () => {
     expect(stripLineGutter('1  a\n2  b').text).toBe('a\nb');
     expect(stripLineGutter('1  a\n5  b').stripped).toBe(false);
     expect(stripLineGutter('return 1').stripped).toBe(false);
+  });
+});
+
+describe('agent runs: accepted hunks are held across files and written as one edit', () => {
+  const A = 'alpha\nbeta\ngamma\n';
+  const B = 'one\ntwo\nthree\n';
+  const C = 'red\ngreen\n';
+
+  /** Like setup(), with applyAll: counts multi-file edits and can refuse one file. */
+  function multi(files: Record<string, string>, reviewer: Reviewer = acceptAll) {
+    const s = setup(files, reviewer);
+    const batches: string[][] = [];
+    const host = (s.tx as unknown as { host: EditorHost }).host;
+    host.applyAll = async (changes) => {
+      for (const c of changes) if (files[c.path] !== c.baseText) return { changed: c.path };
+      for (const c of changes) {
+        let text = c.baseText;
+        for (const e of [...c.edits].sort((x, y) => y.start - x.start)) text = text.slice(0, e.start) + e.text + text.slice(e.end);
+        files[c.path] = text;
+      }
+      batches.push(changes.map((c) => c.path));
+      return 'ok';
+    };
+    return { ...s, batches };
+  }
+  const edit = (path: string, old_text: string, new_text: string) => ({ path, edits: [{ old_text, new_text }] });
+
+  it('writes nothing until commit, then all files in one edit, and records one undo', async () => {
+    const { tx, files, batches, applied } = multi({ 'a.py': A, 'b.py': B, 'c.md': C });
+    const run = tx.beginRun(undefined, { deferred: true });
+    const r1 = await tx.execute(run.token, 'propose_write', edit('a.py', 'beta', 'BETA'));
+    expect(r1.isError).toBe(false);
+    expect(r1.text).toMatch(/accepted by the user and staged; not on disk yet/);
+    expect(r1.text).toMatch(/nothing is on disk yet/);
+    await tx.execute(run.token, 'propose_write', edit('b.py', 'two', 'TWO'));
+    await tx.execute(run.token, 'propose_write', edit('c.md', 'green', 'GREEN'));
+    expect(files).toEqual({ 'a.py': A, 'b.py': B, 'c.md': C });
+    expect(await tx.readForRun(run.token, 'a.py')).toBe('alpha\nBETA\ngamma\n');
+
+    const commit = await tx.commit(run.id);
+    expect(commit).toMatchObject({ ok: true, hunks: 3 });
+    expect(batches).toEqual([['a.py', 'b.py', 'c.md']]);
+    expect(applied).toEqual([]);
+    expect(files).toEqual({ 'a.py': 'alpha\nBETA\ngamma\n', 'b.py': 'one\nTWO\nthree\n', 'c.md': 'red\nGREEN\n' });
+    expect(tx.proposalsFor(run.id).every((p) => p.state === 'applied' && p.hunks.every((h) => h.status === 'applied'))).toBe(true);
+    expect(tx.lastApplied?.files.map((f) => [f.path, f.before])).toEqual([['a.py', A], ['b.py', B], ['c.md', C]]);
+    tx.endRun(run.id, 'finished');
+    expect(await tx.rollback(run.id)).toEqual(['a.py', 'b.py', 'c.md']); // only the Runner decides when; data is still there
+  });
+
+  it('a second edit to the same file builds on the staged text', async () => {
+    const { tx, files } = multi({ 'a.py': A });
+    const run = tx.beginRun(undefined, { deferred: true });
+    await tx.execute(run.token, 'propose_write', edit('a.py', 'beta', 'BETA'));
+    const again = await tx.execute(run.token, 'propose_write', edit('a.py', 'BETA\ngamma', 'BETA\nGAMMA'));
+    expect(again.isError).toBe(false);
+    await tx.commit(run.id);
+    expect(files['a.py']).toBe('alpha\nBETA\nGAMMA\n');
+    expect(tx.lastApplied?.files).toEqual([{ path: 'a.py', before: A, after: 'alpha\nBETA\nGAMMA\n' }]);
+  });
+
+  it('cancel discards everything staged in every file and writes nothing', async () => {
+    const { tx, files, batches } = multi({ 'a.py': A, 'b.py': B });
+    const run = tx.beginRun(undefined, { deferred: true });
+    await tx.execute(run.token, 'propose_write', edit('a.py', 'beta', 'BETA'));
+    await tx.execute(run.token, 'propose_write', edit('b.py', 'two', 'TWO'));
+    tx.endRun(run.id, 'cancelled');
+    expect(await tx.rollback(run.id)).toEqual([]);
+    expect(files).toEqual({ 'a.py': A, 'b.py': B });
+    expect(batches).toEqual([]);
+    expect(tx.proposalsFor(run.id).every((p) => p.state === 'discarded')).toBe(true);
+    expect((await tx.commit(run.id)).ok).toBe(false);
+    expect(files).toEqual({ 'a.py': A, 'b.py': B });
+  });
+
+  it('a failed run takes back what an earlier commit wrote, as one edit', async () => {
+    const { tx, files, batches } = multi({ 'a.py': A, 'b.py': B });
+    const run = tx.beginRun(undefined, { deferred: true });
+    await tx.execute(run.token, 'propose_write', edit('a.py', 'beta', 'BETA'));
+    await tx.execute(run.token, 'propose_write', edit('b.py', 'two', 'TWO'));
+    await tx.commit(run.id); // e.g. before run_command
+    await tx.execute(run.token, 'propose_write', edit('a.py', 'gamma', 'GAMMA')); // held, never committed
+    tx.endRun(run.id, 'failed');
+    expect(await tx.rollback(run.id)).toEqual(['a.py', 'b.py']);
+    expect(files).toEqual({ 'a.py': A, 'b.py': B });
+    expect(batches).toEqual([['a.py', 'b.py'], ['a.py', 'b.py']]);
+    expect(tx.lastApplied).toBeUndefined();
+    expect(tx.proposalsFor(run.id).flatMap((p) => p.hunks).every((h) => h.status === 'failed')).toBe(true);
+  });
+
+  it('commit is all or nothing when a file changed outside Ripple', async () => {
+    const { tx, files, batches } = multi({ 'a.py': A, 'b.py': B });
+    const run = tx.beginRun(undefined, { deferred: true });
+    await tx.execute(run.token, 'propose_write', edit('a.py', 'beta', 'BETA'));
+    await tx.execute(run.token, 'propose_write', edit('b.py', 'two', 'TWO'));
+    files['b.py'] = 'edited by the user\n';
+    const commit = await tx.commit(run.id);
+    expect(commit.ok).toBe(false);
+    expect(commit.error).toMatch(/b\.py changed outside Ripple/);
+    expect(files['a.py']).toBe(A);
+    expect(batches).toEqual([]);
+  });
+
+  it('rejected hunks stay out of the staged text and are reported', async () => {
+    const { tx, files } = multi({ 'helpers.py': BASE }, (p, t) => {
+      t.decide(p.id, p.hunks[0]!.id, false, 'leave the docstring');
+      t.decide(p.id, p.hunks[1]!.id, true);
+    });
+    const run = tx.beginRun(undefined, { deferred: true });
+    const out = await tx.execute(run.token, 'propose_write', twoHunkEdit);
+    expect(out.text).toMatch(/rejected by user: leave the docstring/);
+    expect(out.text).toMatch(/1 of 2 hunk\(s\) are staged/);
+    await tx.commit(run.id);
+    expect(files['helpers.py']).toContain('"off", "n"');
+    expect(files['helpers.py']).not.toContain('Off values');
   });
 });

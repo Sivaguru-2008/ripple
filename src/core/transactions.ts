@@ -24,9 +24,22 @@ export interface Run {
   readonly token: string;
   state: RunState;
   readonly selection?: SelectionTarget;
+  /**
+   * Agent runs. Accepted hunks are held in memory, across files, and written together as one
+   * edit when the run commits (before an approved command runs, and when the run finishes).
+   * A cancelled or failed run writes nothing and takes back anything it had committed.
+   */
+  readonly deferred: boolean;
 }
 
-export type HunkStatus = 'pending' | 'accepted' | 'rejected' | 'applied' | 'failed';
+/** A file as one run sees it: before the run, on disk now, and with its accepted hunks. */
+interface StagedFile {
+  original: string;
+  disk: string;
+  current: string;
+}
+
+export type HunkStatus = 'pending' | 'accepted' | 'held' | 'rejected' | 'applied' | 'failed';
 
 export interface Hunk {
   /** hash(base text, range, new text): identical proposals get identical ids. */
@@ -40,7 +53,7 @@ export interface Hunk {
   reason?: string;
 }
 
-export type ProposalState = 'reviewing' | 'decided' | 'applied' | 'rejected' | 'failed' | 'discarded';
+export type ProposalState = 'reviewing' | 'decided' | 'held' | 'applied' | 'rejected' | 'failed' | 'discarded';
 
 export interface Proposal {
   readonly id: string;
@@ -72,8 +85,28 @@ export interface EditorHost {
    * file still equals `baseText`. Returns 'changed' and writes nothing otherwise.
    */
   applyEdits(path: string, baseText: string, edits: TextReplacement[]): Promise<'ok' | 'changed'>;
+  /**
+   * Applies edits to several files as ONE edit (one undo step across files) and saves them,
+   * but only if every file still equals its `baseText`. Otherwise writes nothing and returns
+   * the path that changed. Without it, files are applied one after another.
+   */
+  applyAll?(changes: FileChange[]): Promise<'ok' | { changed: string }>;
   /** Shows the review. Resolves when every hunk is decided or the review is closed. */
   review(proposal: Proposal): Promise<void>;
+}
+
+export interface FileChange {
+  path: string;
+  baseText: string;
+  edits: TextReplacement[];
+}
+
+export interface CommitResult {
+  ok: boolean;
+  /** Files written by this commit. */
+  files: string[];
+  hunks: number;
+  error?: string;
 }
 
 export interface ToolOutcome {
@@ -83,11 +116,10 @@ export interface ToolOutcome {
 
 export type ApprovalAnswer = { allow: true } | { allow: false; reason: string };
 
+/** Everything one run wrote, so it can be undone as one step. */
 export interface AppliedChange {
   runId: string;
-  path: string;
-  before: string;
-  after: string;
+  files: { path: string; before: string; after: string }[];
 }
 
 export class StaleRunError extends Error {}
@@ -101,8 +133,10 @@ export interface ReplaceSelectionArgs {
   new_text: string;
 }
 
+const CRLF = String.fromCharCode(13, 10);
 const STATUS_STAGED = 'staged, awaiting review';
 const STATUS_APPLIED = 'applied';
+const STATUS_HELD = 'accepted by the user and staged; not on disk yet (written when run_command runs or when the run ends)';
 const rejectedStatus = (reason: string | undefined): string => `rejected by user: ${reason ?? 'no reason given'}`;
 
 function sha(...parts: string[]): string {
@@ -123,6 +157,8 @@ function hunkStatusText(h: Hunk): string {
     case 'pending':
     case 'accepted':
       return STATUS_STAGED;
+    case 'held':
+      return STATUS_HELD;
     case 'applied':
       return STATUS_APPLIED;
     case 'rejected':
@@ -145,15 +181,19 @@ export class TransactionManager {
   private readonly staging = new Map<string, Promise<void>>();
   private nextRun = 1;
   private nextProposal = 1;
+  private readonly stagedFiles = new Map<string, Map<string, StagedFile>>();
   lastApplied: AppliedChange | undefined;
+  /** Called after any change to runs, proposals or hunks (the panel redraws from it). */
+  onDidChange: (() => void) | undefined;
 
   constructor(private readonly host: EditorHost) {}
 
-  beginRun(selection?: SelectionTarget): Run {
+  beginRun(selection?: SelectionTarget, options: { deferred?: boolean } = {}): Run {
     const run: Run = {
       id: `run-${this.nextRun++}`,
       token: randomBytes(16).toString('base64url'),
       state: 'active',
+      deferred: options.deferred ?? false,
       ...(selection ? { selection } : {}),
     };
     this.runs.set(run.id, run);
@@ -186,10 +226,10 @@ export class TransactionManager {
     run.state = state;
     for (const p of this.proposals) {
       if (p.runId !== id) continue;
-      if (p.state === 'reviewing' || p.state === 'decided') {
+      if (p.state === 'reviewing' || p.state === 'decided' || p.state === 'held') {
         p.state = 'discarded';
         for (const h of p.hunks) {
-          if (h.status === 'pending' || h.status === 'accepted') {
+          if (h.status === 'pending' || h.status === 'accepted' || h.status === 'held') {
             h.status = 'failed';
             h.reason = `run ${state}, nothing written`;
           }
@@ -198,6 +238,111 @@ export class TransactionManager {
       this.reviews.get(p.id)?.();
       this.reviews.delete(p.id);
     }
+    this.onDidChange?.();
+  }
+
+  /** The text of a file as this run sees it: with the hunks accepted so far, else the editor's text. */
+  async readForRun(token: string, path: string): Promise<string> {
+    const run = this.requireActive(token);
+    return this.stagedFiles.get(run.id)?.get(path)?.current ?? this.host.readText(path);
+  }
+
+  /** Text a run holds for `path` (with its accepted hunks), if any. */
+  stagedText(runId: string, path: string): string | undefined {
+    return this.stagedFiles.get(runId)?.get(path)?.current;
+  }
+
+  /**
+   * Writes everything the run holds as ONE edit across files. Called before an approved
+   * command runs (so it tests the accepted edits) and when the run finishes. All or nothing:
+   * if a file changed outside Ripple, nothing is written and the held hunks fail.
+   */
+  async commit(runId: string): Promise<CommitResult> {
+    const run = this.runs.get(runId);
+    const staged = this.stagedFiles.get(runId);
+    if (!run || run.state !== 'active') return { ok: false, files: [], hunks: 0, error: `${runId} is not active; nothing was written` };
+    const held = this.proposals.filter((p) => p.runId === runId && p.state === 'held');
+    const pending = [...(staged ?? new Map<string, StagedFile>())].filter(([, f]) => f.current !== f.disk);
+    if (pending.length === 0) return { ok: true, files: [], hunks: 0 };
+    const changes: FileChange[] = pending.map(([path, f]) => ({ path, baseText: f.disk, edits: replacementsBetween(f.disk, f.current) }));
+    let failed: string | undefined;
+    if (this.host.applyAll) {
+      const result = await this.host.applyAll(changes);
+      if (result !== 'ok') failed = result.changed;
+    } else {
+      for (const c of changes) {
+        if ((await this.host.applyEdits(c.path, c.baseText, c.edits)) === 'changed') {
+          failed = c.path;
+          break;
+        }
+        const f = staged?.get(c.path);
+        if (f) f.disk = f.current;
+      }
+    }
+    if (failed !== undefined) {
+      const reason = `${failed} changed outside Ripple after the edit was staged; read it again and re-propose`;
+      for (const p of held) {
+        p.state = 'failed';
+        for (const h of p.hunks) {
+          if (h.status === 'held') {
+            h.status = 'failed';
+            h.reason = reason;
+          }
+        }
+      }
+      // Forget the staged text that could not be written; what is on disk stays as it is.
+      for (const [, f] of pending) f.current = f.disk;
+      this.onDidChange?.();
+      return { ok: false, files: [], hunks: 0, error: `Nothing was written: ${reason}.` };
+    }
+    let hunks = 0;
+    for (const p of held) {
+      p.state = 'applied';
+      for (const h of p.hunks) {
+        if (h.status === 'held') {
+          h.status = 'applied';
+          hunks++;
+        }
+      }
+    }
+    for (const [, f] of pending) f.disk = f.current;
+    this.lastApplied = {
+      runId,
+      files: [...(staged ?? [])].filter(([, f]) => f.disk !== f.original).map(([path, f]) => ({ path, before: f.original, after: f.disk })),
+    };
+    this.onDidChange?.();
+    return { ok: true, files: pending.map(([path]) => path), hunks };
+  }
+
+  /**
+   * After a cancelled or failed run: takes back, as one edit, what the run had already
+   * committed, so the workspace is as it was before the run. Returns the files restored.
+   */
+  async rollback(runId: string): Promise<string[]> {
+    const staged = this.stagedFiles.get(runId);
+    this.stagedFiles.delete(runId);
+    const written = [...(staged ?? [])].filter(([, f]) => f.disk !== f.original);
+    if (written.length === 0) return [];
+    const changes: FileChange[] = written.map(([path, f]) => ({ path, baseText: f.disk, edits: [{ start: 0, end: f.disk.length, text: f.original }] }));
+    const restored: string[] = [];
+    if (this.host.applyAll) {
+      if ((await this.host.applyAll(changes)) === 'ok') restored.push(...changes.map((c) => c.path));
+    } else {
+      for (const c of changes) if ((await this.host.applyEdits(c.path, c.baseText, c.edits)) === 'ok') restored.push(c.path);
+    }
+    for (const p of this.proposals) {
+      if (p.runId !== runId || p.state !== 'applied') continue;
+      p.state = 'discarded';
+      for (const h of p.hunks) {
+        if (h.status === 'applied') {
+          h.status = 'failed';
+          h.reason = restored.includes(p.path) ? 'the run did not finish; the change was taken back' : 'the run did not finish';
+        }
+      }
+    }
+    if (this.lastApplied?.runId === runId) this.lastApplied = undefined;
+    this.onDidChange?.();
+    return restored;
   }
 
   proposalsFor(runId: string): Proposal[] {
@@ -221,6 +366,7 @@ export class TransactionManager {
       this.reviews.get(p.id)?.();
       this.reviews.delete(p.id);
     }
+    this.onDidChange?.();
   }
 
   /**
@@ -266,7 +412,37 @@ export class TransactionManager {
     if (run.state !== 'active' || p.state === 'discarded') {
       return { isError: true, text: `Rejected: ${run.id} is ${run.state}. Nothing was written.` };
     }
-    return this.applyDecided(p);
+    const outcome = run.deferred ? await this.holdDecided(run, p) : await this.applyDecided(p);
+    this.onDidChange?.();
+    return outcome;
+  }
+
+  /** Agent runs: keeps the accepted hunks in the run's staged copy of the file. Writes nothing. */
+  private async holdDecided(run: Run, p: Proposal): Promise<ToolOutcome> {
+    p.executed = true;
+    const accepted = p.hunks.filter((h) => h.status === 'accepted');
+    if (accepted.length === 0) {
+      p.state = 'rejected';
+      return { isError: false, text: this.report(p) };
+    }
+    let files = this.stagedFiles.get(run.id);
+    if (!files) this.stagedFiles.set(run.id, (files = new Map()));
+    const entry = files.get(p.path);
+    const now = entry?.current ?? (await this.host.readText(p.path).catch(() => undefined));
+    if (now !== p.baseText) {
+      p.state = 'failed';
+      for (const h of accepted) {
+        h.status = 'failed';
+        h.reason = 'the file changed after the edit was staged; read it again and re-propose';
+      }
+      return { isError: true, text: this.report(p) };
+    }
+    const next = applyReplacements(p.baseText, this.replacements(p, accepted));
+    if (entry) entry.current = next;
+    else files.set(p.path, { original: p.baseText, disk: p.baseText, current: next });
+    p.state = 'held';
+    for (const h of accepted) h.status = 'held';
+    return { isError: false, text: this.report(p) };
   }
 
   /** A review closed early: hunks left undecided count as rejected. */
@@ -306,21 +482,7 @@ export class TransactionManager {
       p.state = 'rejected';
       return { isError: false, text: this.report(p) };
     }
-    const offsets = lineOffsets(p.baseText);
-    const eol = detectEol(p.baseText);
-    const lineCount = splitLines(p.baseText).length;
-    const edits: TextReplacement[] = accepted.map((h) => {
-      const start = offsets[h.baseStart] ?? p.baseText.length;
-      const replacingToEnd = h.baseEnd >= lineCount;
-      const end = replacingToEnd ? p.baseText.length : (offsets[h.baseEnd] ?? p.baseText.length);
-      let text = h.newLines.join(eol);
-      if (h.newLines.length > 0 && !replacingToEnd) text += eol;
-      // Deleting the last lines: also drop the line break before them.
-      if (h.newLines.length === 0 && replacingToEnd && start > 0) {
-        return { start: start - (p.baseText.slice(0, start).endsWith('\r\n') ? 2 : 1), end, text };
-      }
-      return { start, end, text };
-    });
+    const edits = this.replacements(p, accepted);
     const result = await this.host.applyEdits(p.path, p.baseText, edits);
     if (result === 'changed') {
       p.state = 'failed';
@@ -332,18 +494,37 @@ export class TransactionManager {
     }
     p.state = 'applied';
     for (const h of accepted) h.status = 'applied';
-    let after = p.baseText;
-    for (const e of [...edits].sort((a, b) => b.start - a.start)) after = after.slice(0, e.start) + e.text + after.slice(e.end);
-    this.lastApplied = { runId: p.runId, path: p.path, before: p.baseText, after };
+    this.lastApplied = { runId: p.runId, files: [{ path: p.path, before: p.baseText, after: applyReplacements(p.baseText, edits) }] };
     return { isError: false, text: this.report(p) };
+  }
+
+  /** The accepted hunks of a proposal as character replacements in its base text. */
+  private replacements(p: Proposal, accepted: Hunk[]): TextReplacement[] {
+    const offsets = lineOffsets(p.baseText);
+    const eol = detectEol(p.baseText);
+    const lineCount = splitLines(p.baseText).length;
+    return accepted.map((h) => {
+      const start = offsets[h.baseStart] ?? p.baseText.length;
+      const replacingToEnd = h.baseEnd >= lineCount;
+      const end = replacingToEnd ? p.baseText.length : (offsets[h.baseEnd] ?? p.baseText.length);
+      let text = h.newLines.join(eol);
+      if (h.newLines.length > 0 && !replacingToEnd) text += eol;
+      // Deleting the last lines: also drop the line break before them.
+      if (h.newLines.length === 0 && replacingToEnd && start > 0) {
+        return { start: start - (p.baseText.slice(0, start).endsWith('\r\n') ? 2 : 1), end, text };
+      }
+      return { start, end, text };
+    });
   }
 
   /** Precise per-hunk status text for the model. Never implies a write that did not happen. */
   report(p: Proposal): string {
     const lines = p.hunks.map((h) => `- hunk ${h.id} (${describeLines(h)}): ${hunkStatusText(h)}`);
     const applied = p.hunks.filter((h) => h.status === 'applied').length;
-    const tail =
-      applied === 0
+    const held = p.hunks.filter((h) => h.status === 'held').length;
+    const tail = held
+      ? `${held} of ${p.hunks.length} hunk(s) are staged for ${p.path} (read_file shows them); nothing is on disk yet.`
+      : applied === 0
         ? `Nothing was written to ${p.path}.`
         : `${applied} of ${p.hunks.length} hunk(s) were written to ${p.path}; the others were not.`;
     return `${p.tool} ${p.path} (proposal ${p.id}):\n${lines.join('\n')}\n${tail}`;
@@ -398,6 +579,7 @@ export class TransactionManager {
       executed: false,
     };
     this.proposals.push(proposal);
+    this.onDidChange?.();
     return { kind: 'staged', proposal };
   }
 
@@ -432,9 +614,9 @@ export class TransactionManager {
       }
       let baseText: string;
       try {
-        baseText = await this.host.readText(path);
+        baseText = this.stagedFiles.get(run.id)?.get(path)?.current ?? (await this.host.readText(path));
       } catch (err) {
-        return { ok: false, error: `Cannot read ${path}: ${String(err)}. Nothing was staged.` };
+        return { ok: false, error: `Cannot read ${path}: ${String(err)}. propose_write edits existing files only. Nothing was staged.` };
       }
       const result = applyTextEdits(baseText, edits as ProposeWriteArgs['edits']);
       if (!result.ok) return { ok: false, error: `${result.error} Nothing was staged for ${path}.` };
@@ -442,6 +624,32 @@ export class TransactionManager {
     }
     return { ok: false, error: `Unknown tool ${tool}.` };
   }
+}
+
+export function applyReplacements(text: string, edits: TextReplacement[]): string {
+  let out = text;
+  for (const e of [...edits].sort((a, b) => b.start - a.start)) out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  return out;
+}
+
+/** Minimal line-level replacements that turn `from` into `to`. */
+export function replacementsBetween(from: string, to: string): TextReplacement[] {
+  const a = splitLines(from);
+  const offsets = lineOffsets(from);
+  const eol = detectEol(from);
+  const out: TextReplacement[] = [];
+  for (const c of diffLines(a, splitLines(to))) {
+    const toEnd = c.baseEnd >= a.length;
+    let start = offsets[c.baseStart] ?? from.length;
+    const end = toEnd ? from.length : (offsets[c.baseEnd] ?? from.length);
+    let text = c.newLines.join(eol);
+    if (c.newLines.length > 0 && !toEnd) text += eol;
+    if (toEnd && c.baseStart >= a.length && c.newLines.length > 0) text = eol + text;
+    if (c.newLines.length === 0 && toEnd && start > 0) start -= from.slice(0, start).endsWith(CRLF) ? 2 : 1;
+    out.push({ start, end, text });
+  }
+  // Anything unusual (mixed line endings): replace the whole text instead.
+  return applyReplacements(from, out) === to ? out : [{ start: 0, end: from.length, text: to }];
 }
 
 /**

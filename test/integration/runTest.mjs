@@ -11,9 +11,13 @@
 // Then: npm run test:vscode            (scripted mock model, no API key)
 //   or: $env:RIPPLE_TEST_MODEL='ollama/qwen-coder-tools-7b'; npm run test:vscode
 //
+// VS Code: a pinned 1.142.0, downloaded once by @vscode/test-electron into .vscode-test
+// (gitignored). The installed VS Code is never used. To run another build, set
+// VSCODE_EXECUTABLE to its executable.
+//
 // Side effect: adds (or updates) a custom model provider "ripple-mock" in that TrueForge.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +30,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const baseUrl = process.env.RIPPLE_TRUEFORGE_URL ?? 'http://localhost:8790';
 const mockPort = Number(process.env.RIPPLE_MOCK_PORT ?? 8792);
 const flaskRepo = process.env.RIPPLE_FLASK_REPO ?? path.resolve(root, '..', 'forge-refs', 'flask');
+const VSCODE_VERSION = '1.142.0';
 
 async function main() {
   try {
@@ -88,12 +93,13 @@ async function main() {
   // this makes VS Code's extension host attach to the wrong crash handler and never start.
   delete process.env.CHROME_CRASHPAD_PIPE_NAME;
 
-  const installed = path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Microsoft VS Code', 'Code.exe');
-  const vscodeExecutablePath = process.env.VSCODE_EXECUTABLE ?? (existsSync(installed) ? installed : undefined);
+  // Not the installed VS Code: its background updater closed the test window mid-run and
+  // then blocked launches. A pinned download has no updater touching it.
+  const vscodeExecutablePath = process.env.VSCODE_EXECUTABLE;
 
   try {
     await runTests({
-      ...(vscodeExecutablePath ? { vscodeExecutablePath } : {}),
+      ...(vscodeExecutablePath ? { vscodeExecutablePath } : { version: VSCODE_VERSION }),
       extensionDevelopmentPath: root,
       extensionTestsPath: path.join(root, 'dist', 'test', 'suite.js'),
       extensionTestsEnv: {

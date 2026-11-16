@@ -32,6 +32,20 @@ function debugFlag(value: string): string {
   }).trim();
 }
 
+/** The docstring of get_debug_flag: the text between the first pair of triple quotes after its def line. */
+function debugFlagDocstring(source: string): string {
+  const def = source.indexOf('def get_debug_flag');
+  assert.ok(def >= 0, 'get_debug_flag not found after the edit');
+  const m = /("""|''')([\s\S]*?)\1/.exec(source.slice(def));
+  assert.ok(m, 'get_debug_flag has no docstring after the edit');
+  return m[2]!;
+}
+
+/** True when `value` appears in the text as a listed value (a whole word, quoted or not), in any case. */
+function listsValue(text: string, value: string): boolean {
+  return new RegExp(`(?<![A-Za-z0-9_])${value}(?![A-Za-z0-9_])`, 'i').test(text);
+}
+
 /** Opens helpers.py and selects get_debug_flag (def line through its return line). */
 async function selectGetDebugFlag(): Promise<vscode.TextEditor> {
   const doc = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(vscode.Uri.file(root()), HELPERS));
@@ -124,6 +138,14 @@ export async function run(): Promise<void> {
     const off = debugFlag('off');
     console.log(`FLASK_DEBUG=off → ${off}; n → ${debugFlag('n')}; OFF → ${debugFlag('OFF')}; 1 → ${debugFlag('1')}`);
     assert.equal(off, 'False', 'verification command did not print False');
+    // The instruction's second clause: the docstring must list the new false values.
+    const docstring = debugFlagDocstring(after);
+    const missing = ['off', 'n'].filter((v) => !listsValue(docstring, v));
+    assert.deepEqual(
+      missing,
+      [],
+      `Task A: the get_debug_flag docstring does not list ${missing.map((v) => `'${v}'`).join(' and ')} as false; the code changed but the docstring clause was ignored.\n--- docstring ---\n${docstring}`,
+    );
     assert.notEqual(gitStatus(), '', 'expected helpers.py modified');
 
     // One undo restores the original file.

@@ -48,6 +48,11 @@
     "generative_ui": {
       "enabled": false
     },
+    "context_management": {
+      "large_tool_response": {
+        "enabled": false
+      }
+    },
     "iteration_limit": 25
   }
 }

@@ -109,6 +109,54 @@ describe('Task C Resilience & Model Fallback', () => {
     expect(result.runIds.length).toBe(1);
     expect(tx.getRun(result.runIds[0]!)?.state).toBe('finished');
     expect(disk['test.txt']).toBe('original content');
+
+    // The fallback wrote nothing: the result must say so instead of looking like a success.
+    expect(result.model).toBe('fallback/qwen-7b');
+    expect(result.hunksWritten).toBe(0);
+    expect(result.fallback).toEqual({
+      from: 'primary/bad-endpoint',
+      to: 'fallback/qwen-7b',
+      reason: '[Model Error] Headers Timeout Error after 60s',
+    });
+    expect(result.message).toContain('primary/bad-endpoint failed');
+    expect(result.message).toContain('finished without changing any file');
+    expect(logs.some((l) => l.includes('done with a warning'))).toBe(true);
+  });
+
+  it('reports a run that ends without edits and without fallback', async () => {
+    const { runner, mockTf, primarySpec, fallbackSpec } = createFixture();
+    mockTf.runTurn.mockResolvedValue({ status: 'done' });
+
+    const result = await runner.run({
+      spec: primarySpec,
+      fallbackSpec,
+      message: 'Do nothing',
+      decideOther: async () => ({ allow: true }),
+    });
+
+    expect(result.status).toBe('done');
+    expect(result.model).toBe('primary/bad-endpoint');
+    expect(result.fallback).toBeUndefined();
+    expect(result.hunksWritten).toBe(0);
+    expect(result.message).toBe('The run finished without changing any file.');
+  });
+
+  it('names the fallback model in the error when both models fail', async () => {
+    const { runner, mockTf, primarySpec, fallbackSpec } = createFixture();
+    mockTf.runTurn.mockResolvedValue({ status: 'error', message: 'Cannot connect to API: bad port' });
+
+    const result = await runner.run({
+      spec: primarySpec,
+      fallbackSpec,
+      message: 'Both fail',
+      decideOther: async () => ({ allow: true }),
+      attempts: 1,
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.model).toBe('fallback/qwen-7b');
+    expect(result.fallback?.from).toBe('primary/bad-endpoint');
+    expect(result.message).toContain('fallback model fallback/qwen-7b');
   });
 
   it('detects primary model connection failure (bad port / ECONNREFUSED) and recovers on fallback', async () => {
@@ -257,5 +305,9 @@ describe('Task C Resilience & Model Fallback', () => {
     expect(tx.getRun(runId)?.state).toBe('finished');
     // Successful edit applied on disk
     expect(disk['test.txt']).toBe('recovered and verified content');
+    // Edits from the fallback model are flagged for review, not passed off as the primary's.
+    expect(result.hunksWritten).toBe(1);
+    expect(result.fallback?.to).toBe('fallback/qwen-7b');
+    expect(result.message).toContain('wrote 1 change(s)');
   });
 });

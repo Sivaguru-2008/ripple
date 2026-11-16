@@ -36,6 +36,28 @@ export interface RunResult {
   message?: string;
   runIds: string[];
   attempts: number;
+  /** Model that ran the last attempt. */
+  model?: string;
+  /** Set when the primary model failed and the fallback model took over. */
+  fallback?: { from: string; to: string; reason: string };
+  /** Hunks written to the workspace by this run. Set when status is `done`. */
+  hunksWritten?: number;
+}
+
+/**
+ * A `done` run that wrote nothing is not a success the user should take on trust, least of
+ * all after a silent switch to the fallback model. Returns the warning to show, if any.
+ */
+export function describeOutcome(result: RunResult): string | undefined {
+  if (result.status !== 'done') return undefined;
+  const wroteNothing = result.hunksWritten === 0;
+  if (result.fallback) {
+    const switched = `${result.fallback.from} failed (${result.fallback.reason}); ${result.fallback.to} took over`;
+    return wroteNothing
+      ? `${switched} and finished without changing any file. The task was not carried out.`
+      : `${switched} and wrote ${result.hunksWritten ?? 'the'} change(s). Review them: they come from the fallback model.`;
+  }
+  return wroteNothing ? 'The run finished without changing any file.' : undefined;
 }
 
 export interface RunnerDeps {
@@ -79,6 +101,7 @@ export class Runner {
 
     let activeSpec = req.spec;
     let switchedToFallback = false;
+    let fallback: RunResult['fallback'];
     let totalAttempts = 0;
 
     for (let attempt = 1; ; attempt++) {
@@ -146,7 +169,23 @@ export class Runner {
             }
             log(`[run] ${run.id} committed ${committed.hunks} hunks across ${committed.files.length} files`);
           }
-          return await this.end(run.id, 'finished', { status: 'done', runIds, attempts: totalAttempts });
+          const hunksWritten = tx
+            .proposalsFor(run.id)
+            .reduce((sum, p) => sum + p.hunks.filter((h) => h.status === 'applied').length, 0);
+          const result: RunResult = {
+            status: 'done',
+            runIds,
+            attempts: totalAttempts,
+            model: activeSpec.model.name,
+            hunksWritten,
+            ...(fallback ? { fallback } : {}),
+          };
+          const warning = describeOutcome(result);
+          if (warning) {
+            result.message = warning;
+            log(`[run] ${run.id} done with a warning: ${warning}`);
+          }
+          return await this.end(run.id, 'finished', result);
         }
 
         failure = outcome.message ?? outcome.status;
@@ -181,13 +220,21 @@ export class Runner {
         const fromModel = activeSpec.model.name;
         activeSpec = req.fallbackSpec;
         switchedToFallback = true;
+        fallback = { from: fromModel, to: activeSpec.model.name, reason: failure ?? 'primary model failure' };
         log(`[fallback] primary model ${fromModel} failed (${failure}); switching to fallback model ${activeSpec.model.name}`);
         req.onFallback?.(fromModel, activeSpec.model.name, failure ?? 'primary model failure');
         continue;
       }
 
       await this.end(run.id, 'failed', undefined);
-      return { status: 'error', message: failure, runIds, attempts: totalAttempts };
+      return {
+        status: 'error',
+        message: fallback ? `${failure} (fallback model ${fallback.to}, after ${fallback.from} failed: ${fallback.reason})` : failure,
+        runIds,
+        attempts: totalAttempts,
+        model: activeSpec.model.name,
+        ...(fallback ? { fallback } : {}),
+      };
     }
   }
 

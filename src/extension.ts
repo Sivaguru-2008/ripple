@@ -382,6 +382,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
       void vscode.window.showErrorMessage(`Ripple: the run failed after ${result.attempts} attempt(s): ${result.message ?? 'unknown error'}. Nothing staged was written.`);
     } else if (result.status === 'cancelled') {
       void vscode.window.showInformationMessage('Ripple: cancelled. Staged changes were discarded.');
+    } else if (result.message) {
+      // Done, but with something the user must know: fallback model used, or nothing written.
+      void vscode.window.showWarningMessage(`Ripple: ${result.message}`);
     }
   };
 

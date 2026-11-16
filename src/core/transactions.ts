@@ -37,6 +37,10 @@ interface StagedFile {
   original: string;
   disk: string;
   current: string;
+  /** The run creates this file: it did not exist before the run. */
+  created: boolean;
+  /** For a created file: whether a commit has put it on disk yet. */
+  onDisk: boolean;
 }
 
 export type HunkStatus = 'pending' | 'accepted' | 'held' | 'rejected' | 'applied' | 'failed';
@@ -61,6 +65,8 @@ export interface Proposal {
   readonly tool: string;
   readonly path: string;
   readonly baseText: string;
+  /** True when the file does not exist yet: accepting the proposal creates it. */
+  readonly creates: boolean;
   readonly hunks: Hunk[];
   /** hash(tool, arguments): recognises the same call made twice. */
   readonly key: string;
@@ -99,6 +105,10 @@ export interface FileChange {
   path: string;
   baseText: string;
   edits: TextReplacement[];
+  /** The file must not exist; it is created (baseText is '') as part of the same edit. */
+  create?: boolean;
+  /** The file is deleted (taking back a creation), if it still equals baseText. */
+  remove?: boolean;
 }
 
 export interface CommitResult {
@@ -119,7 +129,8 @@ export type ApprovalAnswer = { allow: true } | { allow: false; reason: string };
 /** Everything one run wrote, so it can be undone as one step. */
 export interface AppliedChange {
   runId: string;
-  files: { path: string; before: string; after: string }[];
+  /** `created`: the run created the file, so undoing the run deletes it. */
+  files: { path: string; before: string; after: string; created?: boolean }[];
 }
 
 export class StaleRunError extends Error {}
@@ -171,7 +182,7 @@ function hunkStatusText(h: Hunk): string {
 type StageResult = { kind: 'staged' | 'duplicate'; proposal: Proposal } | { kind: 'error'; error: string };
 
 /** Builds the base→new text for a tool call, or explains why the call is invalid. */
-type Target = { ok: true; path: string; baseText: string; newText: string } | { ok: false; error: string };
+type Target = { ok: true; path: string; baseText: string; newText: string; creates?: boolean } | { ok: false; error: string };
 
 export class TransactionManager {
   private readonly runs = new Map<string, Run>();
@@ -292,11 +303,17 @@ export class TransactionManager {
     const held = this.proposals.filter((p) => p.runId === runId && p.state === 'held');
     const pending = [...(staged ?? new Map<string, StagedFile>())].filter(([, f]) => f.current !== f.disk);
     if (pending.length === 0) return { ok: true, files: [], hunks: 0 };
-    const changes: FileChange[] = pending.map(([path, f]) => ({ path, baseText: f.disk, edits: replacementsBetween(f.disk, f.current) }));
+    const changes: FileChange[] = pending.map(([path, f]) =>
+      f.created && !f.onDisk
+        ? { path, baseText: '', edits: [{ start: 0, end: 0, text: f.current }], create: true }
+        : { path, baseText: f.disk, edits: replacementsBetween(f.disk, f.current) },
+    );
     let failed: string | undefined;
     if (this.host.applyAll) {
       const result = await this.host.applyAll(changes);
       if (result !== 'ok') failed = result.changed;
+    } else if (changes.some((c) => c.create)) {
+      failed = changes.find((c) => c.create)?.path;
     } else {
       for (const c of changes) {
         if ((await this.host.applyEdits(c.path, c.baseText, c.edits)) === 'changed') {
@@ -333,10 +350,15 @@ export class TransactionManager {
         }
       }
     }
-    for (const [, f] of pending) f.disk = f.current;
+    for (const [, f] of pending) {
+      f.disk = f.current;
+      if (f.created) f.onDisk = true;
+    }
     this.lastApplied = {
       runId,
-      files: [...(staged ?? [])].filter(([, f]) => f.disk !== f.original).map(([path, f]) => ({ path, before: f.original, after: f.disk })),
+      files: [...(staged ?? [])]
+        .filter(([, f]) => (f.created ? f.onDisk : f.disk !== f.original))
+        .map(([path, f]) => ({ path, before: f.original, after: f.disk, ...(f.created ? { created: true } : {}) })),
     };
     this.onDidChange?.();
     return { ok: true, files: pending.map(([path]) => path), hunks };
@@ -349,9 +371,12 @@ export class TransactionManager {
   async rollback(runId: string): Promise<string[]> {
     const staged = this.stagedFiles.get(runId);
     this.stagedFiles.delete(runId);
-    const written = [...(staged ?? [])].filter(([, f]) => f.disk !== f.original);
+    const written = [...(staged ?? [])].filter(([, f]) => (f.created ? f.onDisk : f.disk !== f.original));
     if (written.length === 0) return [];
-    const changes: FileChange[] = written.map(([path, f]) => ({ path, baseText: f.disk, edits: [{ start: 0, end: f.disk.length, text: f.original }] }));
+    // A file the run created is deleted again; any other file gets its old text back.
+    const changes: FileChange[] = written.map(([path, f]) =>
+      f.created ? { path, baseText: f.disk, edits: [], remove: true } : { path, baseText: f.disk, edits: [{ start: 0, end: f.disk.length, text: f.original }] },
+    );
     const restored: string[] = [];
     if (this.host.applyAll) {
       if ((await this.host.applyAll(changes)) === 'ok') restored.push(...changes.map((c) => c.path));
@@ -457,7 +482,8 @@ export class TransactionManager {
     if (!files) this.stagedFiles.set(run.id, (files = new Map()));
     const entry = files.get(p.path);
     const now = entry?.current ?? (await this.host.readText(p.path).catch(() => undefined));
-    if (now !== p.baseText) {
+    // A new file must still not exist; an existing one must still have the text the hunks were made from.
+    if (p.creates && !entry ? now !== undefined : now !== p.baseText) {
       p.state = 'failed';
       for (const h of accepted) {
         h.status = 'failed';
@@ -467,7 +493,7 @@ export class TransactionManager {
     }
     const next = applyReplacements(p.baseText, this.replacements(p, accepted));
     if (entry) entry.current = next;
-    else files.set(p.path, { original: p.baseText, disk: p.baseText, current: next });
+    else files.set(p.path, { original: p.baseText, disk: p.baseText, current: next, created: p.creates, onDisk: !p.creates });
     p.state = 'held';
     for (const h of accepted) h.status = 'held';
     return { isError: false, text: this.report(p) };
@@ -511,7 +537,10 @@ export class TransactionManager {
       return { isError: false, text: this.report(p) };
     }
     const edits = this.replacements(p, accepted);
-    const result = await this.host.applyEdits(p.path, p.baseText, edits);
+    let result: 'ok' | 'changed';
+    if (!p.creates) result = await this.host.applyEdits(p.path, p.baseText, edits);
+    else if (!this.host.applyAll) result = 'changed';
+    else result = (await this.host.applyAll([{ path: p.path, baseText: '', edits: [{ start: 0, end: 0, text: applyReplacements('', edits) }], create: true }])) === 'ok' ? 'ok' : 'changed';
     if (result === 'changed') {
       p.state = 'failed';
       for (const h of accepted) {
@@ -522,7 +551,10 @@ export class TransactionManager {
     }
     p.state = 'applied';
     for (const h of accepted) h.status = 'applied';
-    this.lastApplied = { runId: p.runId, files: [{ path: p.path, before: p.baseText, after: applyReplacements(p.baseText, edits) }] };
+    this.lastApplied = {
+      runId: p.runId,
+      files: [{ path: p.path, before: p.baseText, after: applyReplacements(p.baseText, edits), ...(p.creates ? { created: true } : {}) }],
+    };
     return { isError: false, text: this.report(p) };
   }
 
@@ -551,7 +583,9 @@ export class TransactionManager {
     const applied = p.hunks.filter((h) => h.status === 'applied').length;
     const held = p.hunks.filter((h) => h.status === 'held').length;
     const tail = held
-      ? `${held} of ${p.hunks.length} hunk(s) are staged for ${p.path} (read_file shows them); nothing is on disk yet.`
+      ? p.creates
+        ? `New file ${p.path} is staged (read_file shows it); it does not exist on disk yet.`
+        : `${held} of ${p.hunks.length} hunk(s) are staged for ${p.path} (read_file shows them); nothing is on disk yet.`
       : applied === 0
         ? `Nothing was written to ${p.path}.`
         : `${applied} of ${p.hunks.length} hunk(s) were written to ${p.path}; the others were not.`;
@@ -601,6 +635,7 @@ export class TransactionManager {
       tool,
       path: target.path,
       baseText: target.baseText,
+      creates: target.creates ?? false,
       hunks,
       key,
       state: 'reviewing',
@@ -644,7 +679,19 @@ export class TransactionManager {
       try {
         baseText = this.stagedFiles.get(run.id)?.get(path)?.current ?? (await this.host.readText(path));
       } catch (err) {
-        return { ok: false, error: `Cannot read ${path}: ${String(err)}. propose_write edits existing files only. Nothing was staged.` };
+        // The file does not exist: one edit with an empty old_text creates it, reviewed like any edit.
+        const only = edits.length === 1 ? (edits[0] as { old_text?: unknown; new_text?: unknown }) : undefined;
+        const outside = /outside the workspace|path is empty/.test(String(err));
+        if (!outside && only && only.old_text === '' && typeof only.new_text === 'string' && only.new_text.trim() !== '') {
+          const text = stripLineGutter(stripCodeFence(only.new_text)).text.replace(/\r\n/g, '\n');
+          return { ok: true, path, baseText: '', newText: text.endsWith('\n') ? text : `${text}\n`, creates: true };
+        }
+        return {
+          ok: false,
+          error: outside
+            ? `Cannot use ${path}: ${String(err)}. Nothing was staged.`
+            : `${path} does not exist. To create it, call propose_write with exactly one edit whose old_text is "" and whose new_text is the whole file. Nothing was staged.`,
+        };
       }
       const result = applyTextEdits(baseText, edits as ProposeWriteArgs['edits']);
       if (!result.ok) return { ok: false, error: `${result.error} Nothing was staged for ${path}.` };

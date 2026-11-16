@@ -149,7 +149,9 @@ function buildServer(host: ToolHost, runToken: string): McpServer {
     'propose_write',
     {
       description:
-        'Propose edits to one workspace file. The user reviews every change hunk by hunk; only ' +
+        'Propose edits to one workspace file, or create a new one. To create a file that does not exist, ' +
+        'pass exactly one edit with old_text "" and new_text = the whole file. ' +
+        'The user reviews every change hunk by hunk; only ' +
         'accepted hunks are written. Each edit replaces old_text (copied exactly from the file, ' +
         'without line numbers, occurring exactly once) with new_text. The result states for each ' +
         'hunk whether it was applied or rejected by the user; do not claim more than it says.',
@@ -158,7 +160,7 @@ function buildServer(host: ToolHost, runToken: string): McpServer {
         edits: z
           .array(
             z.object({
-              old_text: z.string().describe('Exact existing text to replace. Must occur exactly once.'),
+              old_text: z.string().describe('Exact existing text to replace. Must occur exactly once. Empty only when creating a new file.'),
               new_text: z.string().describe('Replacement text.'),
             }),
           )

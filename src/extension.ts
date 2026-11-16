@@ -81,27 +81,48 @@ async function applyEdits(path: string, baseText: string, edits: TextReplacement
 
 /** Applies all replacements across multiple files as ONE atomic WorkspaceEdit, then saves all. */
 async function applyAll(changes: FileChange[]): Promise<'ok' | { changed: string }> {
-  const docs: { doc: vscode.TextDocument; path: string }[] = [];
+  const exists = async (uri: vscode.Uri): Promise<boolean> => {
+    try {
+      await vscode.workspace.fs.stat(uri);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // Check everything first, so either all files change or none does.
+  const docs = new Map<string, vscode.TextDocument>();
   for (const c of changes) {
     const uri = fileUri(c.path);
+    if (c.create) {
+      if (await exists(uri)) return { changed: c.path };
+      continue;
+    }
     const doc = await vscode.workspace.openTextDocument(uri);
     if (doc.getText() !== c.baseText) return { changed: c.path };
-    docs.push({ doc, path: c.path });
+    docs.set(c.path, doc);
   }
+  // Creations, edits and deletions go into ONE WorkspaceEdit: one undo step across files.
   const edit = new vscode.WorkspaceEdit();
-  for (let i = 0; i < changes.length; i++) {
-    const c = changes[i]!;
-    const doc = docs[i]!.doc;
-    for (const e of c.edits) {
-      edit.replace(doc.uri, new vscode.Range(doc.positionAt(e.start), doc.positionAt(e.end)), e.text);
+  const toSave: vscode.Uri[] = [];
+  for (const c of changes) {
+    const uri = fileUri(c.path);
+    if (c.remove) {
+      edit.deleteFile(uri, { ignoreIfNotExists: true });
+    } else if (c.create) {
+      // Created with its bytes, not by typing into an empty document: VS Code would otherwise
+      // apply the platform's default line ending and the file would differ from what was reviewed.
+      const contents = new TextEncoder().encode(c.edits.map((e) => e.text).join(''));
+      edit.createFile(uri, { ignoreIfExists: false, overwrite: false, contents });
+    } else {
+      const doc = docs.get(c.path)!;
+      for (const e of c.edits) edit.replace(uri, new vscode.Range(doc.positionAt(e.start), doc.positionAt(e.end)), e.text);
+      toSave.push(uri);
     }
   }
   if (!(await vscode.workspace.applyEdit(edit))) {
     return { changed: changes[0]?.path ?? 'workspace' };
   }
-  for (const { doc } of docs) {
-    await doc.save();
-  }
+  for (const uri of toSave) await (await vscode.workspace.openTextDocument(uri)).save();
   return 'ok';
 }
 
@@ -456,6 +477,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
         if (doc.getText() !== f.after) {
           void vscode.window.showWarningMessage(`Ripple: ${f.path} changed after Ripple's edit; use Ctrl+Z in the editor instead.`);
           return false;
+        }
+        if (f.created) {
+          // The run created this file: undoing the run removes it.
+          edit.deleteFile(uri, { ignoreIfNotExists: true });
+          continue;
         }
         edit.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), f.before);
         docs.push(doc);

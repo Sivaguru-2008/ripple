@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { runShellCommand } from './core/command';
 import { parseMentions, resolveMentions } from './core/mentions';
 import { resolveInWorkspace } from './core/paths';
+import { mineCochange } from './core/cochange';
 import { retrieve, type RetrieveResult } from './core/retrieve';
 import { searchWorkspace } from './core/search';
 import { TransactionManager, type FileChange, type Proposal, type TextReplacement } from './core/transactions';
@@ -31,6 +32,8 @@ export interface RippleApi {
   onDidStream: vscode.Event<string>;
   /** Every line written to the Ripple output channel. */
   logs: string[];
+  /** The most recent retrieve_context result (what the Receipt section shows). */
+  lastReceipt(): RetrieveResult | undefined;
 }
 
 function workspaceRoot(): string {
@@ -132,6 +135,7 @@ function inlineMessage(path: string, languageId: string, startLine: number, endL
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<RippleApi> {
+  let lastReceipt: RetrieveResult | undefined;
   const output = vscode.window.createOutputChannel('Ripple');
   context.subscriptions.push(output);
   const logs: string[] = [];
@@ -181,7 +185,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
         });
         const mentions = parseMentions(task);
         const resolved = await resolveMentions(mentions, source);
-        const res = await retrieve(task, source, { budgetTokens, pins: resolved.pins });
+        // Mined once per workspace and cached; an unavailable history only drops this signal.
+        const cochange = await mineCochange(root);
+        const res = await retrieve(task, source, { budgetTokens, pins: resolved.pins, cochange });
+        lastReceipt = res;
         panelProvider?.setReceipt(res);
         return { text: res.text, isError: false };
       } catch (err) {
@@ -461,7 +468,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
     }),
   );
 
-  return { tx, onDidOpenReview: review.onDidOpen, onDidStream: streamEmitter.event, logs };
+  return { tx, onDidOpenReview: review.onDidOpen, onDidStream: streamEmitter.event, logs, lastReceipt: () => lastReceipt };
 }
 
 export async function deactivate(): Promise<void> {

@@ -231,6 +231,18 @@ export async function run(): Promise<void> {
     assert.ok(touchedFiles.some((f) => f.includes('test_cli.py')), 'tests/test_cli.py not modified');
     assert.ok(touchedFiles.some((f) => f.includes('cli.rst')), 'docs/cli.rst not modified');
 
+    // The receipt shown in the panel names the tests and docs, with co-change evidence.
+    const receipt = api.lastReceipt();
+    assert.ok(receipt, 'retrieve_context was never called, so there is no receipt');
+    console.log(receipt.receipt.map((r) => `receipt: ${r.path} [${r.reason}, ~${r.tokens}] ${r.evidence}`).join('\n'));
+    console.log(receipt.evicted.map((e) => `evicted: ${e.path}: ${e.reason}`).join('\n'));
+    for (const wanted of ['tests/test_cli.py', 'docs/cli.rst']) {
+      const row = receipt.receipt.find((r) => r.path === wanted);
+      assert.ok(row, `receipt does not contain ${wanted}`);
+      assert.match(row.evidence, /changed with \S+ in \d+ commits/, `${wanted} has no co-change evidence: ${row.evidence}`);
+    }
+    assert.ok(receipt.usedTokens <= receipt.budgetTokens, 'receipt exceeds its budget');
+
     // Verify all hunks were applied
     for (const p of reviews) {
       assert.ok(p.hunks.every((h) => h.status === 'applied'), `Not all hunks applied in ${p.path}`);

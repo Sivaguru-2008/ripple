@@ -20,7 +20,7 @@ export interface PanelReceiptData {
 }
 
 export interface PanelStagedSummary {
-  files: { path: string; hunksCount: number }[];
+  files: { path: string; hunksCount: number; detail: string }[];
   totalHunks: number;
 }
 
@@ -123,6 +123,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     const existing = this.state.toolCalls.find((c) => c.id === call.id);
     if (existing) {
       existing.status = call.status;
+      if (call.name && call.name !== '(tool)') existing.name = call.name;
+      if (call.args) existing.args = call.args;
       if (call.resultText) existing.resultText = call.resultText;
     } else {
       this.state.toolCalls.push(call);
@@ -477,7 +479,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
               <span>\${escapeHtml(c.name)}</span>
               <span style="font-size: 0.8em; color: \${c.status === 'done' ? '#56d364' : c.status === 'error' ? '#f85149' : '#e3b341'}">\${c.status.toUpperCase()}</span>
             </div>
-            <div class="tool-args">\${escapeHtml(c.args)}</div>
+            <div class="tool-args">\${escapeHtml(c.args.length > 240 ? c.args.slice(0, 240) + '…' : c.args)}</div>
+            \${c.resultText ? '<div class="tool-args">→ ' + escapeHtml(c.resultText) + '</div>' : ''}
           </div>
         \`).join('');
       } else {
@@ -516,9 +519,9 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       // Render Staged Multi-file Summary
       if (state.staged && state.staged.totalHunks > 0) {
         let html = '<div class="staged-box">';
-        html += '<div class="staged-title">Staged Multi-File Hunks (' + state.staged.totalHunks + ' total)</div>';
+        html += '<div class="staged-title">Changes by file (' + state.staged.totalHunks + ' hunks in ' + state.staged.files.length + ' files)</div>';
         for (const f of state.staged.files) {
-          html += '<div>• <span class="file-path" onclick="openFile(\\'' + escapeHtml(f.path) + '\\')">' + escapeHtml(f.path) + '</span>: ' + f.hunksCount + ' hunk(s)</div>';
+          html += '<div>• <span class="file-path" onclick="openFile(\\'' + escapeHtml(f.path) + '\\')">' + escapeHtml(f.path) + '</span>: ' + escapeHtml(f.detail) + '</div>';
         }
         html += '</div>';
         stagedContainer.innerHTML = html;

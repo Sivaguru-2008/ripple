@@ -17,7 +17,7 @@
 //
 // Side effect: adds (or updates) a custom model provider "ripple-mock" in that TrueForge.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,7 +59,8 @@ async function main() {
   const model = realModel ?? 'ripple-mock/mock-1';
   console.log(`Model: ${model}`);
 
-  const tmp = mkdtempSync(path.join(tmpdir(), 'ripple-it-'));
+  // realpath: on Windows tmpdir() can be an 8.3 short path, which breaks Flask's own path tests.
+  const tmp = mkdtempSync(path.join(realpathSync.native(tmpdir()), 'ripple-it-'));
   const inline = JSON.parse(readFileSync(path.join(root, 'agents', 'ripple-inline.json'), 'utf-8'));
   inline.model = { ...inline.model, name: model };
   const inlinePath = path.join(tmp, 'ripple-inline.json');

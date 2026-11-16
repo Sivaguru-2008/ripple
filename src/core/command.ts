@@ -25,7 +25,9 @@ export function runShellCommand(
     exec(
       command,
       {
-        cwd: root,
+        // VS Code reports Windows paths with a lowercase drive letter; a process started there
+        // sees `c:\...` as its cwd, which breaks tools that compare it with resolved paths.
+        cwd: root.replace(/^[a-z]:/, (drive) => drive.toUpperCase()),
         timeout,
         maxBuffer: 8 * 1024 * 1024,
         windowsHide: true,
@@ -35,12 +37,19 @@ export function runShellCommand(
         const exitCode = error && typeof error.code === 'number' ? error.code : error ? 1 : 0;
         const outStr = (stdout || '').toString();
         const errStr = (stderr || '').toString();
-        const combined = outStr + (errStr ? (outStr ? '\n' : '') + errStr : '');
+        // stdout goes last: its end (a test runner's verdict) must survive truncation.
+        const combined = errStr.trim() && outStr.trim() ? `[stderr]\n${errStr.trimEnd()}\n[stdout]\n${outStr}` : outStr + errStr;
         let truncated = false;
         let formatted = combined.trimEnd();
         if (formatted.length > MAX_COMMAND_OUTPUT_CHARS) {
           truncated = true;
-          formatted = formatted.slice(0, MAX_COMMAND_OUTPUT_CHARS) + `\n\n[output truncated: exceeded ${MAX_COMMAND_OUTPUT_CHARS} characters]`;
+          // Keep the start and the end: test runners print their verdict last.
+          const head = Math.floor(MAX_COMMAND_OUTPUT_CHARS * 0.4);
+          const omitted = formatted.length - MAX_COMMAND_OUTPUT_CHARS;
+          formatted =
+            formatted.slice(0, head) +
+            `\n\n[output truncated: exceeded ${MAX_COMMAND_OUTPUT_CHARS} characters; ${omitted} characters in the middle left out]\n\n` +
+            formatted.slice(-(MAX_COMMAND_OUTPUT_CHARS - head));
         }
         const text = formatted ? `exit code: ${exitCode}\noutput:\n${formatted}` : `exit code: ${exitCode}\n(no output)`;
         resolve({

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { runShellCommand } from './core/command';
-import { parseMentions, resolveMentions } from './core/mentions';
+import { describePins, parseMentions, resolveMentions } from './core/mentions';
+import type { Pin } from './core/retrieve';
 import { resolveInWorkspace } from './core/paths';
 import { mineCochange } from './core/cochange';
 import { retrieve, type RetrieveResult } from './core/retrieve';
@@ -18,6 +19,13 @@ const SMOKE_PROMPT = 'Read README.md, then propose adding one line to it.';
 let mcp: RunningMcpServer | undefined;
 
 /** Test-only options; the command palette and keybinding pass nothing. */
+interface AgentRunOptions {
+  instruction?: string;
+  agentPath?: string;
+  /** Test-only: answers the run_command approval without the notification. */
+  approveCommands?: 'allow' | 'deny';
+}
+
 interface CommandOptions {
   /** Agent definition to use instead of the bundled one. */
   agentPath?: string;
@@ -107,8 +115,17 @@ async function askApproval(call: PendingToolCall): Promise<ApprovalDecision> {
   } catch {
     // keep raw arguments
   }
+  let command: string | undefined;
+  try {
+    const parsed = JSON.parse(call.arguments) as { command?: unknown };
+    if (typeof parsed.command === 'string') command = parsed.command;
+  } catch {
+    // not JSON
+  }
   const choice = await vscode.window.showInformationMessage(
-    `Ripple: the agent wants to run ${call.toolName}. Allow it?`,
+    command !== undefined
+      ? `Ripple: the agent wants to run \`${command}\` in the workspace. Accepted hunks are written to disk first. Allow it?`
+      : `Ripple: the agent wants to run ${call.toolName}. Allow it?`,
     { modal: false, detail },
     'Allow',
     'Deny',
@@ -157,6 +174,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
   context.subscriptions.push(review);
 
   let panelProvider: AgentPanelProvider | undefined;
+  /** Files and symbols the user @mentioned, per run: always part of that run's context. */
+  const pinsByRun = new Map<string, Pin[]>();
+  const openBufferText = (p: string): string | undefined => {
+    try {
+      const target = fileUri(p).fsPath;
+      return vscode.workspace.textDocuments.find((d) => d.uri.fsPath === target && d.isDirty)?.getText();
+    } catch {
+      return undefined;
+    }
+  };
+  let panelRunId: string | undefined;
+  // Per-file summary of the current agent run, redrawn whenever a hunk changes state.
+  tx.onDidChange = () => {
+    if (!panelRunId) return;
+    const byFile = new Map<string, Record<string, number>>();
+    for (const p of tx.proposalsFor(panelRunId)) {
+      const counts = byFile.get(p.path) ?? {};
+      for (const h of p.hunks) {
+        const key =
+          h.status === 'held' || h.status === 'accepted' ? 'accepted, staged' : h.status === 'failed' ? 'not written' : h.status === 'applied' ? 'written' : h.status;
+        counts[key] = (counts[key] ?? 0) + 1;
+      }
+      byFile.set(p.path, counts);
+    }
+    const files = [...byFile].map(([path, counts]) => ({
+      path,
+      hunksCount: Object.values(counts).reduce((a, b) => a + b, 0),
+      detail: Object.entries(counts).map(([k, n]) => `${n} ${k}`).join(', '),
+    }));
+    panelProvider?.setStaged({ files, totalHunks: files.reduce((n, x) => n + x.hunksCount, 0) });
+  };
 
   mcp = await startMcpServer({
     checkRun: (token) => void tx.requireActive(token),
@@ -179,12 +227,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
     retrieveContext: async (runToken, task, budgetTokens) => {
       try {
         const root = workspaceRoot();
-        const source = diskSource(root, (p) => {
-          const run = tx.getRun(runToken) ?? [...tx['runs'].values()].find((r) => r.token === runToken);
-          return run ? tx.stagedText(run.id, p) : undefined;
-        });
-        const mentions = parseMentions(task);
-        const resolved = await resolveMentions(mentions, source);
+        // Stale or unknown runs are rejected here, like every other tool.
+        const run = tx.requireActive(runToken);
+        const source = diskSource(root, (p) => tx.stagedText(run.id, p) ?? openBufferText(p));
+        // Pins: what the user @mentioned in the prompt, plus any mention the agent passes on.
+        const fromTask = await resolveMentions(parseMentions(task), source);
+        const userPins = pinsByRun.get(run.id) ?? [];
+        const resolved = { pins: [...userPins, ...fromTask.pins.filter((p) => !userPins.some((u) => u.path === p.path && u.startLine === p.startLine))] };
         // Mined once per workspace and cached; an unavailable history only drops this signal.
         const cochange = await mineCochange(root);
         const res = await retrieve(task, source, { budgetTokens, pins: resolved.pins, cochange });
@@ -198,16 +247,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
     runCommand: async (runToken, command) => {
       try {
         const run = tx.requireActive(runToken);
+        let note = '';
         if (run.deferred) {
+          // The command must test the accepted edits, so they are written first, as one edit.
           const committed = await tx.commit(run.id);
           if (!committed.ok) {
-            return { text: `Commit failed before running command: ${committed.error}`, isError: true };
+            return { text: `The command was not run. ${committed.error}`, isError: true };
           }
-          log(`[command] committed staged hunks for ${run.id} before running command`);
+          if (committed.files.length) {
+            note = `Before the command ran, ${committed.hunks} accepted hunk(s) were written to disk: ${committed.files.join(', ')}.\n`;
+            log(`[command] ${run.id}: wrote ${committed.hunks} accepted hunk(s) in ${committed.files.length} file(s) before the command`);
+          }
         }
         const root = workspaceRoot();
         const res = await runShellCommand(root, command);
-        return { text: res.text, isError: res.isError };
+        log(`[command] ${run.id}: \`${command}\` → ${res.isError ? `failed: ${res.text.slice(-600).replace(/\s+/g, ' ')}` : 'ok'}`);
+        return { text: note + res.text, isError: res.isError };
       } catch (err) {
         return { text: `command failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
@@ -396,7 +451,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
       return ok;
     }),
 
-    vscode.commands.registerCommand('ripple.agentRun', async (options?: { instruction?: string; agentPath?: string }) => {
+    vscode.commands.registerCommand('ripple.agentRun', async (options?: AgentRunOptions) => {
       if (runner.busy) {
         void vscode.window.showWarningMessage('Ripple: a run is in progress. Cancel it first (Ripple: Cancel).');
         return undefined;
@@ -409,21 +464,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
       output.show(true);
       log(`[agent] prompt: ${instruction}`);
       panelProvider?.resetRun();
+      panelRunId = undefined;
 
       try {
         const spec = await loadSpec(context, 'ripple-agent.json', options?.agentPath);
+        // @file and @symbol mentions in the prompt are resolved now and pinned into context.
+        const mentioned = await resolveMentions(parseMentions(instruction), diskSource(workspaceRoot(), openBufferText));
+        if (mentioned.pins.length || mentioned.unresolved.length) log(`[agent] mentions:\n${describePins(mentioned)}`);
+        const message =
+          mentioned.pins.length || mentioned.unresolved.length
+            ? `${instruction}\n\nPinned by the user (always included by retrieve_context):\n${describePins(mentioned)}`
+            : instruction;
+        const approveCommand = async (call: PendingToolCall): Promise<ApprovalDecision> => {
+          if (options?.approveCommands) {
+            log(`[approval] ${call.toolName} ${call.arguments}: ${options.approveCommands} (test option)`);
+            return options.approveCommands === 'allow' ? { allow: true } : { allow: false, reason: 'denied by user' };
+          }
+          return askApproval(call);
+        };
         const result = await runWithProgress('agent task', (onDelta) =>
           runner.run({
             spec,
-            message: instruction,
+            message,
             deferred: true,
-            decideOther: askApproval,
-            onDelta: (text) => {
+            decideOther: approveCommand,
+            onSession: (runId, sessionId) => {
+              panelRunId = runId;
+              pinsByRun.set(runId, mentioned.pins);
+              panelProvider?.setStatus('running', undefined, sessionId);
+            },
+            onDelta: (text, kind) => {
               onDelta(text);
-              panelProvider?.appendStreamedDelta(text);
+              // Tool-call arguments are shown as tool cards, not as assistant text.
+              if (kind === 'content') panelProvider?.appendStreamedDelta(text);
             },
             onToolCall: (call) => {
-              panelProvider?.recordToolCall(call);
+              panelProvider?.recordToolCall({ id: call.id, name: call.name, args: call.args, status: call.status, ...(call.result ? { resultText: call.result } : {}) });
             },
           }),
         );

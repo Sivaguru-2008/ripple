@@ -21,6 +21,13 @@ describe('runShellCommand', () => {
   it('truncates oversized output', async () => {
     const res = await runShellCommand(root, 'node -e "console.log(\'x\'.repeat(6000))"');
     expect(res.truncated).toBe(true);
-    expect(res.text).toContain(`[output truncated: exceeded ${MAX_COMMAND_OUTPUT_CHARS} characters]`);
+    expect(res.text).toContain(`[output truncated: exceeded ${MAX_COMMAND_OUTPUT_CHARS} characters`);
+  });
+
+  it('keeps the end of long output, where test runners print the verdict', async () => {
+    const res = await runShellCommand(root, 'node -e "console.log(\'START\' + \'x\'.repeat(9000) + \'3 passed\')"');
+    expect(res.text).toContain('START');
+    expect(res.text).toContain('3 passed');
+    expect(res.text.length).toBeLessThan(MAX_COMMAND_OUTPUT_CHARS + 300);
   });
 });

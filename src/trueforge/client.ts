@@ -16,6 +16,32 @@ export interface PendingToolCall {
   arguments: string;
 }
 
+/** A tool call as the panel shows it: announced when the model makes it, updated when it is answered. */
+export interface ToolCallUpdate {
+  id: string;
+  /** The real tool, also when it was reached through the deferred-tool `call_tool`. */
+  name: string;
+  args: string;
+  status: 'running' | 'done' | 'denied' | 'error';
+  result?: string;
+}
+
+/**
+ * A deferred tool is called as `call_tool({ mcp_server, tool_name, input })`. Returns the
+ * tool actually meant and its arguments; other calls are returned unchanged.
+ */
+export function unwrapToolCall(name: string, args: string): { name: string; args: string; deferred: boolean } {
+  if (name === 'call_tool' || name.endsWith('__call_tool')) {
+    try {
+      const parsed = JSON.parse(args || '{}') as { tool_name?: unknown; input?: unknown };
+      if (typeof parsed.tool_name === 'string') return { name: parsed.tool_name, args: JSON.stringify(parsed.input ?? {}), deferred: true };
+    } catch {
+      // arguments still streaming or malformed: show the call as it is
+    }
+  }
+  return { name, args, deferred: false };
+}
+
 export type ApprovalDecision = { allow: true } | { allow: false; reason?: string };
 
 export interface TurnHandlers {
@@ -24,7 +50,7 @@ export interface TurnHandlers {
   /** Streamed text as it arrives: assistant content, or tool-call argument fragments. */
   onDelta?(text: string, kind: 'content' | 'tool'): void;
   /** Notified when a tool call is seen or answered. */
-  onToolCall?(call: { id: string; name: string; args: string; status: 'running' | 'done' | 'denied' | 'error' }): void;
+  onToolCall?(call: ToolCallUpdate): void;
   /** True once the user cancelled; pending answers are then not sent. */
   isCancelled?(): boolean;
 }
@@ -150,6 +176,16 @@ export class TrueForgeClient {
     let turnId: string | undefined;
     let lastEventId: string | undefined;
     const messages = new Map<string, TrueForgeApi.ModelMessageEvent>();
+    const announced = new Map<string, { name: string; args: string }>();
+    /** Tells the UI about tool calls of a message once their arguments are complete. */
+    const announce = (messageId: string | undefined): void => {
+      for (const c of (messageId ? messages.get(messageId)?.toolCalls : undefined) ?? []) {
+        if (!c.id || announced.has(c.id)) continue;
+        const real = unwrapToolCall(c.function.name, c.function.arguments);
+        announced.set(c.id, real);
+        handlers.onToolCall?.({ id: c.id, name: real.name, args: real.args, status: 'running' });
+      }
+    };
 
     for (;;) {
       const pending: TrueForgeApi.ToolApprovalRequiredEvent[] = [];
@@ -165,6 +201,7 @@ export class TrueForgeClient {
           ? ` toolCalls=[${calls.map((c) => `${c.function.name}(${truncate(c.function.arguments, 120)})`).join(', ')}]`
           : '';
         handlers.log(`model.message.delta ×${deltaCount}:${callText} ${truncate(deltaText, 400)}`.trimEnd());
+        announce(deltaMessageId);
         deltaText = '';
         deltaCount = 0;
         deltaMessageId = undefined;
@@ -190,10 +227,21 @@ export class TrueForgeClient {
         handlers.log(summarizeEvent(event));
 
         if (event.type === 'turn.created') turnId = event.turnId;
-        else if (event.type === 'model.message') messages.set(event.id, event);
+        else if (event.type === 'model.message') {
+          messages.set(event.id, event);
+          announce(event.id);
+        }
         else if (event.type === 'tool.approval_required') pending.push(event);
         else if (event.type === 'tool.response') {
-          handlers.onToolCall?.({ id: event.toolCallId, name: '', args: '', status: 'done' });
+          const known = announced.get(event.toolCallId);
+          const content = event.content ?? '';
+          handlers.onToolCall?.({
+            id: event.toolCallId,
+            name: known?.name ?? '(tool)',
+            args: known?.args ?? '',
+            status: content.startsWith('User denied') ? 'denied' : 'done',
+            result: truncate(content, 300),
+          });
         } else if (event.type === 'turn.update' && event.state.status === 'paused') {
           paused = true;
           break;

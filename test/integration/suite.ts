@@ -16,7 +16,8 @@ const mock = process.env['RIPPLE_TEST_MOCK'] === '1';
 function root(): string {
   const folder = vscode.workspace.workspaceFolders?.[0];
   assert.ok(folder, 'no workspace folder');
-  return folder.uri.fsPath;
+  // VS Code gives a lowercase drive letter on Windows; Flask's path tests compare with resolved paths.
+  return folder.uri.fsPath.replace(/^[a-z]:/, (drive) => drive.toUpperCase());
 }
 
 function gitStatus(): string {
@@ -199,11 +200,46 @@ export async function run(): Promise<void> {
     assert.equal(gitStatus(), '', 'git status not clean after reject all');
   }
 
+  const TASK_B =
+    'Add a new built-in CLI command flask config that prints the loaded application\'s configuration as JSON, masking the values of any key containing SECRET, PASSWORD, TOKEN or KEY as "***". It must appear in flask --help, be covered by a test, and be documented alongside the other built-in commands.';
+
+  // ---- 5a. Agent mode: @mentions are pinned, and cancel mid-run discards what was staged in every file.
+  if (mock) {
+    step('agent mode: mentions pinned, cancel mid-run');
+    const reviews: Proposal[] = [];
+    const sub = api.onDidOpenReview((p) => {
+      reviews.push(p);
+      if (reviews.length === 1) {
+        // First file: accept everything, so the run holds accepted hunks when it is cancelled.
+        for (const h of p.hunks) void vscode.commands.executeCommand('ripple.acceptHunk', p.id, h.id);
+      } else {
+        void vscode.commands.executeCommand('ripple.cancel');
+      }
+    });
+    const result = await vscode.commands.executeCommand<RunResult>('ripple.agentRun', {
+      instruction: `${TASK_B} Start from @FlaskGroup and look at @config.py.`,
+      agentPath: process.env['RIPPLE_TEST_AGENT'],
+      approveCommands: 'allow',
+    });
+    sub.dispose();
+    console.log(`cancelled agent run: ${result?.status}; reviews opened for ${reviews.map((p) => p.path).join(', ')}`);
+    assert.equal(result?.status, 'cancelled');
+    assert.equal(reviews.length, 2, 'expected the cancel to happen at the second file review');
+    assert.equal(reviews[0]!.hunks.every((h) => h.status === 'failed'), true, 'accepted hunks of the first file were not discarded');
+    assert.equal(gitStatus(), '', 'git status not clean after cancelling an agent run with accepted hunks');
+    assert.ok(vscode.workspace.textDocuments.every((d) => !d.isDirty), 'a buffer is dirty after cancel');
+    const runId = result!.runIds.at(-1)!;
+    assert.ok(api.tx.proposalsFor(runId).every((p) => p.state === 'discarded'), 'staged proposals not discarded');
+    const pinned = api.lastReceipt()?.receipt.filter((r) => r.reason === 'pinned') ?? [];
+    console.log(pinned.map((r) => `pinned: ${r.path}: ${r.evidence}`).join('\n'));
+    assert.ok(pinned.some((r) => r.path === 'src/flask/cli.py' && r.evidence.includes('@FlaskGroup')), '@FlaskGroup was not pinned');
+    assert.ok(pinned.some((r) => r.path === 'src/flask/config.py' && r.evidence.includes('@config.py')), '@config.py was not pinned');
+  }
+
   // ---- 5. Task B: Agent mode unprompted multi-file edit with receipt, pytest verification, and undo.
   step('Task B: Agent mode');
   {
-    const TASK_B_PROMPT =
-      'Add a new built-in CLI command flask config that prints the loaded application\'s configuration as JSON, masking the values of any key containing SECRET, PASSWORD, TOKEN or KEY as "***". It must appear in flask --help, be covered by a test, and be documented alongside the other built-in commands.';
+    const TASK_B_PROMPT = TASK_B;
 
     const reviews: Proposal[] = [];
     const sub = api.onDidOpenReview((p) => {
@@ -217,7 +253,9 @@ export async function run(): Promise<void> {
     const result = await vscode.commands.executeCommand<RunResult>('ripple.agentRun', {
       instruction: TASK_B_PROMPT,
       agentPath: process.env['RIPPLE_TEST_AGENT'],
+      approveCommands: 'allow',
     });
+    console.log(api.logs.filter((l) => /\[command\]|\[approval\]|call_tool|committed|tool\.approval_required/.test(l)).slice(-12).join('\n'));
     sub.dispose();
 
     console.log(`Task B run result: ${result?.status}${result?.message ? ` (${result.message})` : ''}`);
@@ -243,6 +281,12 @@ export async function run(): Promise<void> {
     }
     assert.ok(receipt.usedTokens <= receipt.budgetTokens, 'receipt exceeds its budget');
 
+    // The agent's own verification: run_command, deferred (reached through call_tool) and approval-gated.
+    assert.ok(api.logs.some((l) => /\[approval\] run_command .*pytest/.test(l)), 'run_command was not approval-gated');
+    assert.ok(api.logs.some((l) => /\[command\] .*wrote \d+ accepted hunk\(s\) in 3 file\(s\) before the command/.test(l)), 'accepted hunks were not written as one edit before the command');
+    assert.ok(api.logs.some((l) => /\[command\] .*pytest.* → ok/.test(l)), 'the pytest run started by the agent did not pass');
+    if (mock) assert.ok(api.logs.some((l) => /toolCalls=\[call_tool\(/.test(l)), 'run_command was not called as a deferred tool');
+
     // Verify all hunks were applied
     for (const p of reviews) {
       assert.ok(p.hunks.every((h) => h.status === 'applied'), `Not all hunks applied in ${p.path}`);
@@ -258,7 +302,7 @@ export async function run(): Promise<void> {
     console.log('Running pytest tests/test_cli.py -q...');
     let pytestOut = '';
     try {
-      pytestOut = execFileSync(py, ['-m', 'pytest', 'tests/test_cli.py', '-k', 'test_config_command', '-q'], {
+      pytestOut = execFileSync(py, ['-m', 'pytest', 'tests/test_cli.py', '-q'], {
         cwd: root(),
         env: { ...process.env, PYTHONPATH: 'src' },
         encoding: 'utf-8',
@@ -269,7 +313,8 @@ export async function run(): Promise<void> {
       throw err;
     }
     console.log(`pytest output:\n${pytestOut}`);
-    assert.ok(pytestOut.includes('passed'), 'test_config_command did not pass');
+    assert.match(pytestOut, /\d+ passed/, 'tests/test_cli.py did not pass');
+    assert.doesNotMatch(pytestOut, /failed|error/i, 'tests/test_cli.py has failures');
 
     // Verify flask --help contains config
     console.log('Verifying flask --help lists config...');
@@ -294,7 +339,7 @@ export async function run(): Promise<void> {
       py,
       [
         '-c',
-        'from flask.cli import FlaskGroup; from click.testing import CliRunner; from flask import Flask; app = Flask("app"); app.config["SECRET_KEY"] = "secret123"; app.config["API_TOKEN"] = "token456"; app.config["NORMAL"] = "ok"; r = CliRunner().invoke(FlaskGroup(create_app=lambda: app), ["config"]); print(r.output)',
+        'from flask.cli import FlaskGroup; from click.testing import CliRunner; from flask import Flask; app = Flask("app"); app.config["SECRET_KEY"] = "secret123"; app.config["API_TOKEN"] = "token456"; app.config["DB_PASSWORD"] = "pw789"; app.config["SIGNING_KEY"] = "key000"; app.config["NORMAL"] = "ok"; r = CliRunner().invoke(FlaskGroup(create_app=lambda: app), ["config"]); print(r.output)',
       ],
       {
         cwd: root(),
@@ -305,6 +350,9 @@ export async function run(): Promise<void> {
     console.log(`flask config output:\n${configOut}`);
     assert.ok(configOut.includes('"SECRET_KEY": "***"'), 'SECRET_KEY was not masked');
     assert.ok(configOut.includes('"API_TOKEN": "***"'), 'API_TOKEN was not masked');
+    assert.ok(configOut.includes('"DB_PASSWORD": "***"'), 'DB_PASSWORD was not masked');
+    assert.ok(configOut.includes('"SIGNING_KEY": "***"'), 'SIGNING_KEY was not masked');
+    assert.doesNotThrow(() => JSON.parse(configOut), 'flask config did not print JSON');
     assert.ok(configOut.includes('"NORMAL": "ok"'), 'NORMAL key was altered');
     assert.ok(!configOut.includes('secret123'), 'Raw secret leaked in output');
 

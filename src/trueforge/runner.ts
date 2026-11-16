@@ -2,7 +2,7 @@
 // No `vscode` imports: the extension supplies the UI callbacks.
 import type { TrueForgeApi } from '@truefoundry/trueforge-sdk';
 import type { SelectionTarget, TransactionManager } from '../core/transactions';
-import { isRetryableModelError, type ApprovalDecision, type PendingToolCall, type TrueForgeClient } from './client';
+import { isRetryableModelError, unwrapToolCall, type ApprovalDecision, type PendingToolCall, type ToolCallUpdate, type TrueForgeClient } from './client';
 
 const WRITE_TOOLS = ['propose_write', 'replace_selection'] as const;
 
@@ -15,7 +15,9 @@ export interface RunRequest {
   /** Approval for tools that are not write tools (none in Task A). */
   decideOther(call: PendingToolCall): Promise<ApprovalDecision>;
   onDelta?(text: string, kind: 'content' | 'tool'): void;
-  onToolCall?(call: { id: string; name: string; args: string; status: 'running' | 'done' | 'denied' | 'error' }): void;
+  onToolCall?(call: ToolCallUpdate): void;
+  /** Called once per attempt with the run and its TrueForge session. */
+  onSession?(runId: string, sessionId: string): void;
   /**
    * Sent once as a follow-up turn on the same session when a turn ends without any write
    * tool call (small local models sometimes write the call as text).
@@ -75,6 +77,7 @@ export class Runner {
         const sessionId = await tf.createSession(req.spec);
         current.sessionId = sessionId;
         log(`[trueforge] session ${sessionId}`);
+        req.onSession?.(run.id, sessionId);
         if (current.cancelled) {
           await tf.cancel(sessionId).catch(() => undefined);
           return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
@@ -85,7 +88,10 @@ export class Runner {
           ...(req.onDelta ? { onDelta: req.onDelta } : {}),
           ...(req.onToolCall ? { onToolCall: req.onToolCall } : {}),
           isCancelled: () => current.cancelled,
-          decide: async (call) => {
+          decide: async (raw) => {
+            // A deferred tool arrives wrapped in call_tool; approve the tool actually meant.
+            const real = unwrapToolCall(raw.toolName, raw.arguments);
+            const call: PendingToolCall = { ...raw, toolName: real.name, arguments: real.args };
             const tool = writeToolName(call.toolName);
             if (!tool) return req.decideOther(call);
             writeCalls++;

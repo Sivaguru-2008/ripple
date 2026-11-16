@@ -149,11 +149,14 @@ function decide(messages, tools) {
         },
       };
     }
-    if (!called.some((n) => n.endsWith('run_command'))) {
-      return {
-        tool: pick('run_command'),
-        args: { command: `${process.env.RIPPLE_TEST_PYTHON ?? 'python'} -m pytest tests/test_cli.py -k test_config_command -q` },
-      };
+    if (!called.some((n) => n.endsWith('run_command') || n.endsWith('call_tool'))) {
+      // The whole test file, against the clone's own sources (PYTHONPATH=src).
+      const python = `"${process.env.RIPPLE_TEST_PYTHON ?? 'python'}" -m pytest tests/test_cli.py -q`;
+      const command = process.platform === 'win32' ? `set "PYTHONPATH=src" && ${python}` : `PYTHONPATH=src ${python}`;
+      // run_command is a deferred tool: unless it was preloaded, it is reached through call_tool.
+      const direct = names.find((n) => n?.endsWith('run_command'));
+      if (direct) return { tool: direct, args: { command } };
+      return { tool: pick('call_tool'), args: { mcp_server: 'ripple', tool_name: 'run_command', input: { command } } };
     }
     return { text: `Task B complete. Added flask config CLI command, test in tests/test_cli.py, and documentation in docs/cli.rst. Tests verified.` };
   }

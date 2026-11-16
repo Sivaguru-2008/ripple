@@ -74,7 +74,8 @@ async function main() {
   );
 
   await esbuild.build({
-    entryPoints: [path.join(root, 'test', 'integration', 'suite.ts')],
+    // RIPPLE_TEST_SUITE: run another suite file (e.g. a copy of the committed one).
+    entryPoints: [process.env.RIPPLE_TEST_SUITE ?? path.join(root, 'test', 'integration', 'suite.ts')],
     bundle: true,
     outfile: path.join(root, 'dist', 'test', 'suite.js'),
     platform: 'node',

@@ -198,4 +198,110 @@ export async function run(): Promise<void> {
     assert.ok(api.logs.some((l) => /User denied tool call: .*rejected by user: not now/.test(l)), 'denial reason not delivered');
     assert.equal(gitStatus(), '', 'git status not clean after reject all');
   }
+
+  // ---- 5. Task B: Agent mode unprompted multi-file edit with receipt, pytest verification, and undo.
+  step('Task B: Agent mode');
+  {
+    const TASK_B_PROMPT =
+      'Add a new built-in CLI command flask config that prints the loaded application\'s configuration as JSON, masking the values of any key containing SECRET, PASSWORD, TOKEN or KEY as "***". It must appear in flask --help, be covered by a test, and be documented alongside the other built-in commands.';
+
+    const reviews: Proposal[] = [];
+    const sub = api.onDidOpenReview((p) => {
+      reviews.push(p);
+      console.log(`[Task B review] proposal ${p.id} for ${p.path} with ${p.hunks.length} hunk(s)`);
+      for (const h of p.hunks) {
+        void vscode.commands.executeCommand('ripple.acceptHunk', p.id, h.id);
+      }
+    });
+
+    const result = await vscode.commands.executeCommand<RunResult>('ripple.agentRun', {
+      instruction: TASK_B_PROMPT,
+      agentPath: process.env['RIPPLE_TEST_AGENT'],
+    });
+    sub.dispose();
+
+    console.log(`Task B run result: ${result?.status}${result?.message ? ` (${result.message})` : ''}`);
+    assert.equal(result?.status, 'done', `Task B failed: ${result?.message ?? ''}`);
+
+    // Verify at least 3 files touched
+    const touchedFiles = reviews.map((p) => p.path);
+    console.log(`Task B touched files: ${touchedFiles.join(', ')}`);
+    assert.ok(touchedFiles.length >= 3, `Expected at least 3 files touched, got ${touchedFiles.length}: ${touchedFiles.join(', ')}`);
+    assert.ok(touchedFiles.some((f) => f.includes('cli.py')), 'src/flask/cli.py not modified');
+    assert.ok(touchedFiles.some((f) => f.includes('test_cli.py')), 'tests/test_cli.py not modified');
+    assert.ok(touchedFiles.some((f) => f.includes('cli.rst')), 'docs/cli.rst not modified');
+
+    // Verify all hunks were applied
+    for (const p of reviews) {
+      assert.ok(p.hunks.every((h) => h.status === 'applied'), `Not all hunks applied in ${p.path}`);
+    }
+
+    // Verify git status reflects the changes
+    const status = gitStatus();
+    console.log(`Git status after Task B apply:\n${status}`);
+    assert.notEqual(status, '', 'Expected changes in working directory');
+
+    // Verify pytest passes
+    const py = process.env['RIPPLE_TEST_PYTHON'] ?? 'python';
+    console.log('Running pytest tests/test_cli.py -q...');
+    let pytestOut = '';
+    try {
+      pytestOut = execFileSync(py, ['-m', 'pytest', 'tests/test_cli.py', '-k', 'test_config_command', '-q'], {
+        cwd: root(),
+        env: { ...process.env, PYTHONPATH: 'src' },
+        encoding: 'utf-8',
+      });
+    } catch (err: any) {
+      console.log('pytest stdout:', err.stdout?.toString());
+      console.log('pytest stderr:', err.stderr?.toString());
+      throw err;
+    }
+    console.log(`pytest output:\n${pytestOut}`);
+    assert.ok(pytestOut.includes('passed'), 'test_config_command did not pass');
+
+    // Verify flask --help contains config
+    console.log('Verifying flask --help lists config...');
+    const helpOut = execFileSync(
+      py,
+      [
+        '-c',
+        'from flask.cli import FlaskGroup; from click.testing import CliRunner; from flask import Flask; r = CliRunner().invoke(FlaskGroup(create_app=lambda: Flask("app")), ["--help"]); print(r.output)',
+      ],
+      {
+        cwd: root(),
+        env: { ...process.env, PYTHONPATH: 'src' },
+        encoding: 'utf-8',
+      },
+    );
+    console.log(`flask --help output:\n${helpOut}`);
+    assert.ok(helpOut.includes('config'), 'flask --help does not list config command');
+
+    // Verify flask config prints masked JSON
+    console.log('Verifying flask config output masking...');
+    const configOut = execFileSync(
+      py,
+      [
+        '-c',
+        'from flask.cli import FlaskGroup; from click.testing import CliRunner; from flask import Flask; app = Flask("app"); app.config["SECRET_KEY"] = "secret123"; app.config["API_TOKEN"] = "token456"; app.config["NORMAL"] = "ok"; r = CliRunner().invoke(FlaskGroup(create_app=lambda: app), ["config"]); print(r.output)',
+      ],
+      {
+        cwd: root(),
+        env: { ...process.env, PYTHONPATH: 'src' },
+        encoding: 'utf-8',
+      },
+    );
+    console.log(`flask config output:\n${configOut}`);
+    assert.ok(configOut.includes('"SECRET_KEY": "***"'), 'SECRET_KEY was not masked');
+    assert.ok(configOut.includes('"API_TOKEN": "***"'), 'API_TOKEN was not masked');
+    assert.ok(configOut.includes('"NORMAL": "ok"'), 'NORMAL key was altered');
+    assert.ok(!configOut.includes('secret123'), 'Raw secret leaked in output');
+
+    // Verify undoLastChange restores all files as ONE atomic undo
+    console.log('Verifying atomic undo...');
+    const undoOk = await vscode.commands.executeCommand('ripple.undoLastChange');
+    assert.equal(undoOk, true, 'undoLastChange returned false');
+    const statusAfterUndo = gitStatus();
+    console.log(`Git status after undo:\n${statusAfterUndo}`);
+    assert.equal(statusAfterUndo, '', 'git status not clean after undoLastChange');
+  }
 }

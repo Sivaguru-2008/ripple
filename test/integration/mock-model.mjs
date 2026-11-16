@@ -15,6 +15,86 @@ function taskAReplacement(selected) {
     .replace('{"0", "false", "no"}', '{"0", "false", "no", "off", "n"}');
 }
 
+/** Task B edits across 3 files. */
+const TASK_B_CLI_OLD = `        if add_default_commands:
+            self.add_command(run_command)
+            self.add_command(shell_command)
+            self.add_command(routes_command)`;
+
+const TASK_B_CLI_NEW = `        if add_default_commands:
+            self.add_command(run_command)
+            self.add_command(shell_command)
+            self.add_command(routes_command)
+            self.add_command(config_command)`;
+
+const TASK_B_CLI_DEF_OLD = `cli = FlaskGroup(
+    name="flask",`;
+
+const TASK_B_CLI_DEF_NEW = `@click.command("config", short_help="Show loaded configuration as JSON.")
+@with_appcontext
+def config_command() -> None:
+    """Show loaded application configuration as JSON, masking sensitive values."""
+    import json
+    mask_keys = {"SECRET", "PASSWORD", "TOKEN", "KEY"}
+    def mask_val(v):
+        try:
+            json.dumps(v)
+            return v
+        except (TypeError, OverflowError):
+            return repr(v)
+    masked = {
+        k: "***" if any(m in k.upper() for m in mask_keys) else mask_val(v)
+        for k, v in current_app.config.items()
+    }
+    click.echo(json.dumps(masked, indent=2, sort_keys=True))
+
+
+cli = FlaskGroup(
+    name="flask",`;
+
+const TASK_B_TEST_OLD = `def test_run_exclude_patterns():
+    ctx = run_command.make_context("run", ["--exclude-patterns", __file__])
+    assert ctx.params["exclude_patterns"] == [__file__]`;
+
+const TASK_B_TEST_NEW = `def test_run_exclude_patterns():
+    ctx = run_command.make_context("run", ["--exclude-patterns", __file__])
+    assert ctx.params["exclude_patterns"] == [__file__]
+
+
+def test_config_command(runner):
+    app = Flask("test_config")
+    app.config["SECRET_KEY"] = "super-secret"
+    app.config["MY_PASSWORD"] = "p4ss"
+    app.config["API_TOKEN"] = "tok"
+    app.config["SOME_KEY"] = "val"
+    app.config["NORMAL_VAR"] = "visible"
+
+    test_cli = FlaskGroup(create_app=lambda: app)
+    result = runner.invoke(test_cli, ["config"])
+    assert result.exit_code == 0
+    assert '"SECRET_KEY": "***"' in result.output
+    assert '"MY_PASSWORD": "***"' in result.output
+    assert '"API_TOKEN": "***"' in result.output
+    assert '"SOME_KEY": "***"' in result.output
+    assert '"NORMAL_VAR": "visible"' in result.output
+    assert "super-secret" not in result.output`;
+
+const TASK_B_DOC_OLD = `Open a Shell
+------------`;
+
+const TASK_B_DOC_NEW = 'Show Configuration\n' +
+  '------------------\n\n' +
+  'To print the loaded application configuration as JSON, run the ``flask config`` command.\n' +
+  'Sensitive keys containing SECRET, PASSWORD, TOKEN, or KEY are automatically masked. ::\n\n' +
+  '    $ flask config\n' +
+  '    {\n' +
+  '      "DEBUG": false,\n' +
+  '      "SECRET_KEY": "***",\n' +
+  '      "TESTING": false\n' +
+  '    }\n\n\n' +
+  'Open a Shell\n' +
+  '------------';
+
 function decide(messages, tools) {
   const names = (tools ?? []).map((t) => t.function?.name);
   const called = messages
@@ -31,6 +111,53 @@ function decide(messages, tools) {
     }
     return { text: `Result: ${String(last?.content).slice(0, 120)}` };
   }
+
+  // Task B agent mode:
+  const isTaskB = user.includes('flask config') || messages.some((m) => String(m.content).includes('flask config'));
+  if (isTaskB) {
+    if (!called.some((n) => n.endsWith('retrieve_context'))) {
+      return { tool: pick('retrieve_context'), args: { task: user } };
+    }
+    const writeCount = called.filter((n) => n.endsWith('propose_write')).length;
+    if (writeCount === 0) {
+      return {
+        tool: pick('propose_write'),
+        args: {
+          path: 'src/flask/cli.py',
+          edits: [
+            { old_text: TASK_B_CLI_OLD, new_text: TASK_B_CLI_NEW },
+            { old_text: TASK_B_CLI_DEF_OLD, new_text: TASK_B_CLI_DEF_NEW },
+          ],
+        },
+      };
+    }
+    if (writeCount === 1) {
+      return {
+        tool: pick('propose_write'),
+        args: {
+          path: 'tests/test_cli.py',
+          edits: [{ old_text: TASK_B_TEST_OLD, new_text: TASK_B_TEST_NEW }],
+        },
+      };
+    }
+    if (writeCount === 2) {
+      return {
+        tool: pick('propose_write'),
+        args: {
+          path: 'docs/cli.rst',
+          edits: [{ old_text: TASK_B_DOC_OLD, new_text: TASK_B_DOC_NEW }],
+        },
+      };
+    }
+    if (!called.some((n) => n.endsWith('run_command'))) {
+      return {
+        tool: pick('run_command'),
+        args: { command: `${process.env.RIPPLE_TEST_PYTHON ?? 'python'} -m pytest tests/test_cli.py -k test_config_command -q` },
+      };
+    }
+    return { text: `Task B complete. Added flask config CLI command, test in tests/test_cli.py, and documentation in docs/cli.rst. Tests verified.` };
+  }
+
   if (!called.some((n) => n.endsWith('read_file'))) {
     return { tool: pick('read_file'), args: { path: 'README.md' } };
   }

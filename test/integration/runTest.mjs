@@ -65,6 +65,11 @@ async function main() {
   const inlinePath = path.join(tmp, 'ripple-inline.json');
   writeFileSync(inlinePath, JSON.stringify(inline, null, 2));
 
+  const agent = JSON.parse(readFileSync(path.join(root, 'agents', 'ripple-agent.json'), 'utf-8'));
+  agent.model = { ...agent.model, name: model };
+  const agentPath = path.join(tmp, 'ripple-agent.json');
+  writeFileSync(agentPath, JSON.stringify(agent, null, 2));
+
   // Fresh clone at the pinned tag, so `git status` reflects only what this test does.
   const workspace = path.join(tmp, 'flask');
   execFileSync('git', ['clone', '--quiet', flaskRepo, workspace], { stdio: 'inherit' });
@@ -104,6 +109,7 @@ async function main() {
       extensionTestsPath: path.join(root, 'dist', 'test', 'suite.js'),
       extensionTestsEnv: {
         RIPPLE_TEST_INLINE_AGENT: inlinePath,
+        RIPPLE_TEST_AGENT: agentPath,
         RIPPLE_TEST_PYTHON: process.env.RIPPLE_TEST_PYTHON ?? 'python',
         RIPPLE_TEST_MOCK: realModel ? '' : '1',
       },

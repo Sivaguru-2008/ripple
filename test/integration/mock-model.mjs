@@ -1,11 +1,19 @@
 // Test fixture: a scripted OpenAI-compatible chat endpoint, configured in TrueForge as a
 // model provider for the integration test. Ripple itself never talks to it.
-// Script: no read_file call yet -> call read_file; then -> call propose_write; then -> text.
+// Script: inline agent (replace_selection offered) -> Task A replacement, then text.
+// Otherwise: read_file, then propose_write, then text. "SLOW" in the request streams slowly.
 import http from 'node:http';
 
 const log = (...a) => {
   if (process.env.RIPPLE_MOCK_VERBOSE) console.log('[mock]', ...a);
 };
+
+/** Task A edit the mock makes to the selected get_debug_flag lines: two separate hunks. */
+function taskAReplacement(selected) {
+  return selected
+    .replace('The default is ``False``.', 'The default is ``False``.\n    The values ``0``, ``false``, ``no``, ``off`` and ``n`` (any case) are false.')
+    .replace('{"0", "false", "no"}', '{"0", "false", "no", "off", "n"}');
+}
 
 function decide(messages, tools) {
   const names = (tools ?? []).map((t) => t.function?.name);
@@ -13,20 +21,31 @@ function decide(messages, tools) {
     .filter((m) => m.role === 'assistant' && m.tool_calls)
     .flatMap((m) => m.tool_calls.map((c) => c.function.name));
   const pick = (n) => names.find((x) => x === n || x?.endsWith(n)) ?? n;
+  const user = String(messages.filter((m) => m.role === 'user').at(-1)?.content ?? '');
+  const last = messages.filter((m) => m.role === 'tool').at(-1);
+
+  if (names.some((n) => n?.endsWith('replace_selection'))) {
+    if (!called.some((n) => n.endsWith('replace_selection'))) {
+      const code = /```[^\n]*\n([\s\S]*?)\n```/.exec(user)?.[1] ?? '';
+      return { tool: pick('replace_selection'), args: { new_text: taskAReplacement(code) }, slow: user.includes('SLOW') };
+    }
+    return { text: `Result: ${String(last?.content).slice(0, 120)}` };
+  }
   if (!called.some((n) => n.endsWith('read_file'))) {
     return { tool: pick('read_file'), args: { path: 'README.md' } };
   }
   if (!called.some((n) => n.endsWith('propose_write'))) {
     return {
       tool: pick('propose_write'),
-      args: { epoch: 0, path: 'README.md', edits: [{ start_line: 3, end_line: 2, new_text: 'Added by Ripple smoke test.' }] },
+      args: { path: 'README.md', edits: [{ old_text: 'Hello', new_text: 'Hello\nAdded by Ripple smoke test.' }] },
     };
   }
-  const last = messages.filter((m) => m.role === 'tool').at(-1);
   return { text: `Done. Last tool result: ${String(last?.content).slice(0, 80)}` };
 }
 
-function reply(parsed, res) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function reply(parsed, res) {
   const d = decide(parsed.messages ?? [], parsed.tools);
   log('decision', JSON.stringify(d));
   const id = `chatcmpl-${Date.now()}`;
@@ -48,7 +67,16 @@ function reply(parsed, res) {
     chunk([{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }]);
     for (const piece of d.text.match(/.{1,12}/g)) chunk([{ index: 0, delta: { content: piece }, finish_reason: null }]);
   } else {
-    chunk([{ index: 0, delta: { role: 'assistant', content: null, tool_calls: [{ index: 0, ...toolCall }] }, finish_reason: null }]);
+    // Stream the arguments in fragments, as real providers do. `slow` spreads them over ~8 s.
+    const args = toolCall.function.arguments;
+    const head = { index: 0, id: toolCall.id, type: 'function', function: { name: toolCall.function.name, arguments: '' } };
+    chunk([{ index: 0, delta: { role: 'assistant', content: null, tool_calls: [head] }, finish_reason: null }]);
+    const size = Math.max(8, Math.ceil(args.length / 20));
+    for (let k = 0; k < args.length; k += size) {
+      if (d.slow) await sleep(400);
+      if (res.destroyed) return;
+      chunk([{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(k, k + size) } }] }, finish_reason: null }]);
+    }
   }
   chunk([{ index: 0, delta: {}, finish_reason: finish }]);
   chunk([], { usage });
@@ -73,7 +101,7 @@ export function startMockModel(port = 8792) {
       } catch {
         // empty body
       }
-      reply(parsed, res);
+      void reply(parsed, res);
     });
   });
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));

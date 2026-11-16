@@ -1,13 +1,18 @@
-// Integration test: runs "Ripple: Smoke Test" in a real VS Code Extension Development Host
-// against a running TrueForge, with a scripted mock model so no API key is needed.
+// Integration test: runs Task A (AGENTS.md section 7) in a real VS Code Extension Development
+// Host against a running TrueForge, on a fresh clone of pallets/flask at tag 3.1.3.
 //
-// Prerequisite (separate terminal):
-//   $env:OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1"]'; npx @truefoundry/trueforge@0.185.1
-// Then: npm run test:vscode
-// With a real model already configured in TrueForge (no mock):
-//   $env:RIPPLE_TEST_MODEL='ollama/qwen-coder-tools-7b'; npm run test:vscode
+// Prerequisites:
+//   1. TrueForge (separate terminal):
+//        $env:OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1"]'; npx @truefoundry/trueforge@0.185.1
+//   2. A local clone of pallets/flask with full history (default ../forge-refs/flask,
+//      override with RIPPLE_FLASK_REPO).
+//   3. A Python with Flask's runtime dependencies (werkzeug, jinja2, itsdangerous, click,
+//      blinker, markupsafe): RIPPLE_TEST_PYTHON, default `python`.
+// Then: npm run test:vscode            (scripted mock model, no API key)
+//   or: $env:RIPPLE_TEST_MODEL='ollama/qwen-coder-tools-7b'; npm run test:vscode
 //
 // Side effect: adds (or updates) a custom model provider "ripple-mock" in that TrueForge.
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -20,6 +25,7 @@ import { startMockModel } from './mock-model.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const baseUrl = process.env.RIPPLE_TRUEFORGE_URL ?? 'http://localhost:8790';
 const mockPort = Number(process.env.RIPPLE_MOCK_PORT ?? 8792);
+const flaskRepo = process.env.RIPPLE_FLASK_REPO ?? path.resolve(root, '..', 'forge-refs', 'flask');
 
 async function main() {
   try {
@@ -45,18 +51,27 @@ async function main() {
       },
     });
   }
+  const model = realModel ?? 'ripple-mock/mock-1';
+  console.log(`Model: ${model}`);
 
   const tmp = mkdtempSync(path.join(tmpdir(), 'ripple-it-'));
-  const agent = JSON.parse(readFileSync(path.join(root, 'agents', 'ripple-agent.json'), 'utf-8'));
-  agent.model = { name: realModel ?? 'ripple-mock/mock-1' };
-  console.log(`Model: ${agent.model.name}`);
-  const agentPath = path.join(tmp, 'agent.json');
-  writeFileSync(agentPath, JSON.stringify(agent, null, 2));
+  const inline = JSON.parse(readFileSync(path.join(root, 'agents', 'ripple-inline.json'), 'utf-8'));
+  inline.model = { ...inline.model, name: model };
+  const inlinePath = path.join(tmp, 'ripple-inline.json');
+  writeFileSync(inlinePath, JSON.stringify(inline, null, 2));
 
-  const workspace = path.join(tmp, 'workspace');
-  mkdirSync(path.join(workspace, '.vscode'), { recursive: true });
-  writeFileSync(path.join(workspace, 'README.md'), '# Demo\nHello\n');
-  writeFileSync(path.join(workspace, '.vscode', 'settings.json'), JSON.stringify({ 'ripple.trueforgeBaseUrl': baseUrl }));
+  // Fresh clone at the pinned tag, so `git status` reflects only what this test does.
+  const workspace = path.join(tmp, 'flask');
+  execFileSync('git', ['clone', '--quiet', flaskRepo, workspace], { stdio: 'inherit' });
+  execFileSync('git', ['-C', workspace, 'checkout', '--quiet', '3.1.3'], { stdio: 'inherit' });
+
+  // Settings go in the user profile, not the workspace, to keep the clone untouched.
+  const userData = path.join(tmp, 'user-data');
+  mkdirSync(path.join(userData, 'User'), { recursive: true });
+  writeFileSync(
+    path.join(userData, 'User', 'settings.json'),
+    JSON.stringify({ 'ripple.trueforgeBaseUrl': baseUrl, 'ripple.warmUp': Boolean(realModel), 'git.enabled': false }),
+  );
 
   await esbuild.build({
     entryPoints: [path.join(root, 'test', 'integration', 'suite.ts')],
@@ -80,8 +95,12 @@ async function main() {
       ...(vscodeExecutablePath ? { vscodeExecutablePath } : {}),
       extensionDevelopmentPath: root,
       extensionTestsPath: path.join(root, 'dist', 'test', 'suite.js'),
-      extensionTestsEnv: { RIPPLE_TEST_AGENT: agentPath },
-      launchArgs: [workspace, '--disable-extensions', '--user-data-dir', path.join(tmp, 'user-data'), '--skip-welcome'],
+      extensionTestsEnv: {
+        RIPPLE_TEST_INLINE_AGENT: inlinePath,
+        RIPPLE_TEST_PYTHON: process.env.RIPPLE_TEST_PYTHON ?? 'python',
+        RIPPLE_TEST_MOCK: realModel ? '' : '1',
+      },
+      launchArgs: [workspace, '--disable-extensions', '--user-data-dir', userData, '--skip-welcome'],
     });
     console.log('Integration test passed.');
   } finally {

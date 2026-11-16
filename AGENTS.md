@@ -222,6 +222,9 @@ Do not upgrade.
 - Never commit `config/*.json` except the `.example.json` file.
 - Platform is Windows; use cross-platform paths and avoid bash-only scripts.
 - If a change would violate section 2 or add anything from "Out", stop and ask.
+- One writer at a time in `E:\ripples`. A second agent only reads, or works in
+  its own checkout (`git worktree add --detach ..\ripple-verify master`). Tests
+  are run from a clean checkout, never from a tree someone is editing.
 - Update the status table below at the end of every work session.
 
 ## 11. Status

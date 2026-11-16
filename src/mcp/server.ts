@@ -10,10 +10,16 @@ import { withLineNumbers } from '../core/paths';
 export interface ToolHost {
   /** Throws (with a message for the model) unless `runToken` belongs to the active run. */
   checkRun(runToken: string): void;
-  /** Returns the current text of a workspace-relative file (throws if missing or outside). */
-  readText(path: string): Promise<string>;
+  /** Returns the current text of a workspace-relative file (reads staged version if runToken given). */
+  readText(path: string, runToken?: string): Promise<string>;
   /** Runs a write tool through the transaction manager. Never writes outside a review. */
   execute(runToken: string, tool: 'propose_write' | 'replace_selection', args: unknown): Promise<{ text: string; isError: boolean }>;
+  /** Search text in workspace files. */
+  searchWorkspace?(query: string, glob?: string): Promise<{ text: string; isError: boolean }>;
+  /** Retrieve context and receipt for a task. */
+  retrieveContext?(runToken: string, task: string, budgetTokens?: number): Promise<{ text: string; isError: boolean }>;
+  /** Execute command in workspace root (approval-gated and bound to run). */
+  runCommand?(runToken: string, command: string): Promise<{ text: string; isError: boolean }>;
   log(line: string): void;
 }
 
@@ -56,10 +62,85 @@ function buildServer(host: ToolHost, runToken: string): McpServer {
       host.log(`[mcp] read_file path=${path} start=${start ?? '-'} end=${end ?? '-'}`);
       try {
         host.checkRun(runToken);
-        const content = await host.readText(path);
+        const content = await host.readText(path, runToken);
         return text(withLineNumbers(content, start, end));
       } catch (err) {
         return text(`read_file failed: ${err instanceof Error ? err.message : String(err)}`, true);
+      }
+    },
+  );
+
+  server.registerTool(
+    'retrieve_context',
+    {
+      description:
+        'Retrieve ranked workspace context relevant to a task, packed into a hard token budget. ' +
+        'Always call this first when starting a task. Returns the packed file contents and the receipt.',
+      inputSchema: {
+        task: z.string().describe('Task description or search query.'),
+        budget_tokens: z.number().int().min(600).max(32000).optional().describe('Token budget (default 8000).'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ task, budget_tokens }) => {
+      host.log(`[mcp] retrieve_context task="${task.slice(0, 80)}" budget=${budget_tokens ?? '-'}`);
+      try {
+        host.checkRun(runToken);
+        if (!host.retrieveContext) return text('retrieve_context is not available', true);
+        const out = await host.retrieveContext(runToken, task, budget_tokens);
+        return text(out.text, out.isError);
+      } catch (err) {
+        return text(`retrieve_context failed: ${err instanceof Error ? err.message : String(err)}`, true);
+      }
+    },
+  );
+
+  server.registerTool(
+    'search_workspace',
+    {
+      description:
+        'Search workspace files for text or regex matching a query, with optional glob filter. ' +
+        'Results are capped at 50 matches.',
+      inputSchema: {
+        query: z.string().describe('Query string to search for.'),
+        glob: z.string().optional().describe('Optional glob filter, e.g. "src/**/*.py" or "*.rst".'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ query, glob }) => {
+      host.log(`[mcp] search_workspace query="${query}" glob=${glob ?? '-'}`);
+      try {
+        host.checkRun(runToken);
+        if (!host.searchWorkspace) return text('search_workspace is not available', true);
+        const out = await host.searchWorkspace(query, glob);
+        return text(out.text, out.isError);
+      } catch (err) {
+        return text(`search_workspace failed: ${err instanceof Error ? err.message : String(err)}`, true);
+      }
+    },
+  );
+
+  server.registerTool(
+    'run_command',
+    {
+      description:
+        'Run a shell command in the workspace root. Approval is required before execution. ' +
+        'Staged changes are committed to disk before running so tests see them. ' +
+        'Output is truncated if too long.',
+      inputSchema: {
+        command: z.string().describe('Shell command to execute.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    },
+    async ({ command }) => {
+      host.log(`[mcp] run_command command="${command}"`);
+      try {
+        host.checkRun(runToken);
+        if (!host.runCommand) return text('run_command is not available', true);
+        const out = await host.runCommand(runToken, command);
+        return text(out.text, out.isError);
+      } catch (err) {
+        return text(`run_command failed: ${err instanceof Error ? err.message : String(err)}`, true);
       }
     },
   );

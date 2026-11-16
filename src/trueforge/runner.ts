@@ -10,9 +10,12 @@ export interface RunRequest {
   spec: TrueForgeApi.AgentSpec;
   message: string;
   selection?: SelectionTarget;
+  /** When true, accepted hunks are held in memory across files until command or finish. */
+  deferred?: boolean;
   /** Approval for tools that are not write tools (none in Task A). */
   decideOther(call: PendingToolCall): Promise<ApprovalDecision>;
   onDelta?(text: string, kind: 'content' | 'tool'): void;
+  onToolCall?(call: { id: string; name: string; args: string; status: 'running' | 'done' | 'denied' | 'error' }): void;
   /**
    * Sent once as a follow-up turn on the same session when a turn ends without any write
    * tool call (small local models sometimes write the call as text).
@@ -60,7 +63,7 @@ export class Runner {
     const maxAttempts = req.attempts ?? 2;
     const runIds: string[] = [];
     for (let attempt = 1; ; attempt++) {
-      const run = tx.beginRun(req.selection);
+      const run = tx.beginRun(req.selection, { deferred: req.deferred });
       runIds.push(run.id);
       const current: { runId: string; sessionId?: string; cancelled: boolean } = { runId: run.id, cancelled: false };
       this.current = current;
@@ -74,12 +77,13 @@ export class Runner {
         log(`[trueforge] session ${sessionId}`);
         if (current.cancelled) {
           await tf.cancel(sessionId).catch(() => undefined);
-          return this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
+          return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
         }
         let writeCalls = 0;
         const turn = (text: string) => tf.runTurn(sessionId, text, {
           log,
           ...(req.onDelta ? { onDelta: req.onDelta } : {}),
+          ...(req.onToolCall ? { onToolCall: req.onToolCall } : {}),
           isCancelled: () => current.cancelled,
           decide: async (call) => {
             const tool = writeToolName(call.toolName);
@@ -103,17 +107,26 @@ export class Runner {
         }
         log(`[run] ${run.id} turn finished: ${outcome.status}${outcome.message ? ` (${outcome.message})` : ''}`);
         if (current.cancelled || outcome.status === 'cancelled') {
-          return this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
+          return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
         }
-        if (outcome.status === 'done') return this.end(run.id, 'finished', { status: 'done', runIds, attempts: attempt });
+        if (outcome.status === 'done') {
+          if (run.deferred) {
+            const committed = await tx.commit(run.id);
+            if (!committed.ok) {
+              return await this.end(run.id, 'failed', { status: 'error', message: committed.error, runIds, attempts: attempt });
+            }
+            log(`[run] ${run.id} committed ${committed.hunks} hunks across ${committed.files.length} files`);
+          }
+          return await this.end(run.id, 'finished', { status: 'done', runIds, attempts: attempt });
+        }
         failure = outcome.message ?? outcome.status;
       } catch (err) {
-        if (current.cancelled) return this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
+        if (current.cancelled) return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
         failure = err instanceof Error ? err.message : String(err);
         log(`[run] ${run.id} failed: ${failure}`);
       }
       const applied = tx.proposalsFor(run.id).some((p) => p.state === 'applied');
-      this.end(run.id, 'failed', undefined);
+      await this.end(run.id, 'failed', undefined);
       if (isRetryableModelError(failure) && attempt < maxAttempts && !applied) {
         log(`[run] retryable model error; retrying with a fresh run and session`);
         continue;
@@ -129,6 +142,7 @@ export class Runner {
     current.cancelled = true;
     this.deps.log(`[run] ${current.runId} cancel requested`);
     this.deps.tx.endRun(current.runId, 'cancelled');
+    await this.deps.tx.rollback(current.runId);
     this.deps.onRunEnded?.(current.runId, 'cancelled');
     if (current.sessionId) {
       try {
@@ -141,8 +155,11 @@ export class Runner {
     return true;
   }
 
-  private end<T>(runId: string, state: 'finished' | 'cancelled' | 'failed', result: T): T {
+  private async end<T>(runId: string, state: 'finished' | 'cancelled' | 'failed', result: T): Promise<T> {
     this.deps.tx.endRun(runId, state);
+    if (state !== 'finished') {
+      await this.deps.tx.rollback(runId);
+    }
     this.deps.onRunEnded?.(runId, state);
     if (this.current?.runId === runId) this.current = undefined;
     return result;

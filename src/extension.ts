@@ -1,9 +1,15 @@
 import * as vscode from 'vscode';
+import { runShellCommand } from './core/command';
+import { parseMentions, resolveMentions } from './core/mentions';
 import { resolveInWorkspace } from './core/paths';
-import { TransactionManager, type Proposal, type TextReplacement } from './core/transactions';
+import { retrieve, type RetrieveResult } from './core/retrieve';
+import { searchWorkspace } from './core/search';
+import { TransactionManager, type FileChange, type Proposal, type TextReplacement } from './core/transactions';
+import { diskSource } from './core/workspaceFiles';
 import { startMcpServer, type RunningMcpServer } from './mcp/server';
 import { TrueForgeClient, parseAgentSpec, type ApprovalDecision, type PendingToolCall } from './trueforge/client';
 import { Runner, type RunResult } from './trueforge/runner';
+import { AgentPanelProvider } from './ui/panel';
 import { ReviewController } from './ui/review';
 
 const SMOKE_PROMPT = 'Read README.md, then propose adding one line to it.';
@@ -61,6 +67,32 @@ async function applyEdits(path: string, baseText: string, edits: TextReplacement
   return 'ok';
 }
 
+/** Applies all replacements across multiple files as ONE atomic WorkspaceEdit, then saves all. */
+async function applyAll(changes: FileChange[]): Promise<'ok' | { changed: string }> {
+  const docs: { doc: vscode.TextDocument; path: string }[] = [];
+  for (const c of changes) {
+    const uri = fileUri(c.path);
+    const doc = await vscode.workspace.openTextDocument(uri);
+    if (doc.getText() !== c.baseText) return { changed: c.path };
+    docs.push({ doc, path: c.path });
+  }
+  const edit = new vscode.WorkspaceEdit();
+  for (let i = 0; i < changes.length; i++) {
+    const c = changes[i]!;
+    const doc = docs[i]!.doc;
+    for (const e of c.edits) {
+      edit.replace(doc.uri, new vscode.Range(doc.positionAt(e.start), doc.positionAt(e.end)), e.text);
+    }
+  }
+  if (!(await vscode.workspace.applyEdit(edit))) {
+    return { changed: changes[0]?.path ?? 'workspace' };
+  }
+  for (const { doc } of docs) {
+    await doc.save();
+  }
+  return 'ok';
+}
+
 function baseUrl(): string {
   return vscode.workspace.getConfiguration('ripple').get<string>('trueforgeBaseUrl', 'http://localhost:8790');
 }
@@ -114,15 +146,65 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
   const tx = new TransactionManager({
     readText,
     applyEdits,
+    applyAll,
     review: (p) => review.show(p, fileUri(p.path)),
   });
   review = new ReviewController(tx, log);
   context.subscriptions.push(review);
 
+  let panelProvider: AgentPanelProvider | undefined;
+
   mcp = await startMcpServer({
     checkRun: (token) => void tx.requireActive(token),
-    readText,
+    readText: async (p, runToken) => {
+      if (runToken) {
+        return tx.readForRun(runToken, p);
+      }
+      return readText(p);
+    },
     execute: (token, tool, args) => tx.execute(token, tool, args),
+    searchWorkspace: async (query, glob) => {
+      try {
+        const root = workspaceRoot();
+        const res = await searchWorkspace(root, query, glob);
+        return { text: res.formatted, isError: false };
+      } catch (err) {
+        return { text: `search failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+    retrieveContext: async (runToken, task, budgetTokens) => {
+      try {
+        const root = workspaceRoot();
+        const source = diskSource(root, (p) => {
+          const run = tx.getRun(runToken) ?? [...tx['runs'].values()].find((r) => r.token === runToken);
+          return run ? tx.stagedText(run.id, p) : undefined;
+        });
+        const mentions = parseMentions(task);
+        const resolved = await resolveMentions(mentions, source);
+        const res = await retrieve(task, source, { budgetTokens, pins: resolved.pins });
+        panelProvider?.setReceipt(res);
+        return { text: res.text, isError: false };
+      } catch (err) {
+        return { text: `retrieve failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+    runCommand: async (runToken, command) => {
+      try {
+        const run = tx.requireActive(runToken);
+        if (run.deferred) {
+          const committed = await tx.commit(run.id);
+          if (!committed.ok) {
+            return { text: `Commit failed before running command: ${committed.error}`, isError: true };
+          }
+          log(`[command] committed staged hunks for ${run.id} before running command`);
+        }
+        const root = workspaceRoot();
+        const res = await runShellCommand(root, command);
+        return { text: res.text, isError: res.isError };
+      } catch (err) {
+        return { text: `command failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
     log,
   });
   log(`[mcp] listening on ${mcp.url}/<run token>`);
@@ -138,6 +220,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
       if (state !== 'finished') review.closeRun(runId);
     },
   });
+
+  panelProvider = new AgentPanelProvider(
+    context.extensionUri,
+    async (prompt: string) => {
+      await vscode.commands.executeCommand('ripple.agentRun', { instruction: prompt });
+    },
+    async () => {
+      await vscode.commands.executeCommand('ripple.cancel');
+    },
+    async () => {
+      await vscode.commands.executeCommand('ripple.undoLastChange');
+    },
+    baseUrl(),
+  );
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(AgentPanelProvider.viewType, panelProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
 
   const reportRegistrationError = (err: unknown): void => {
     log(`[trueforge] could not register MCP server at ${baseUrl()}: ${String(err)}`);
@@ -286,6 +387,49 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
       tx.lastApplied = undefined;
       log(`[undo] ${last.files.map((f) => f.path).join(', ')} restored to the text before ${last.runId}`);
       return ok;
+    }),
+
+    vscode.commands.registerCommand('ripple.agentRun', async (options?: { instruction?: string; agentPath?: string }) => {
+      if (runner.busy) {
+        void vscode.window.showWarningMessage('Ripple: a run is in progress. Cancel it first (Ripple: Cancel).');
+        return undefined;
+      }
+      const instruction =
+        options?.instruction ??
+        (await vscode.window.showInputBox({ prompt: 'Ripple: what should the agent build or change?', ignoreFocusOut: true }));
+      if (!instruction) return undefined;
+
+      output.show(true);
+      log(`[agent] prompt: ${instruction}`);
+      panelProvider?.resetRun();
+
+      try {
+        const spec = await loadSpec(context, 'ripple-agent.json', options?.agentPath);
+        const result = await runWithProgress('agent task', (onDelta) =>
+          runner.run({
+            spec,
+            message: instruction,
+            deferred: true,
+            decideOther: askApproval,
+            onDelta: (text) => {
+              onDelta(text);
+              panelProvider?.appendStreamedDelta(text);
+            },
+            onToolCall: (call) => {
+              panelProvider?.recordToolCall(call);
+            },
+          }),
+        );
+        log(`[agent] result: ${result.status}${result.message ? ` (${result.message})` : ''}`);
+        panelProvider?.setStatus(result.status, result.message);
+        finishMessage(result);
+        return result;
+      } catch (err) {
+        reportRegistrationError(err);
+        panelProvider?.setStatus('error', String(err));
+        void vscode.window.showErrorMessage(`Ripple: ${String(err)}`);
+        return { status: 'error', message: String(err), runIds: [], attempts: 0 } satisfies RunResult;
+      }
     }),
 
     // Day 1 smoke test, kept as a regression check of the approval round trip.

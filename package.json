@@ -51,6 +51,24 @@
         "title": "Ripple: Smoke Test"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ripple-sidebar",
+          "title": "Ripple",
+          "icon": "$(sparkle)"
+        }
+      ]
+    },
+    "views": {
+      "ripple-sidebar": [
+        {
+          "type": "webview",
+          "id": "ripple.agentView",
+          "name": "Ripple Agent"
+        }
+      ]
+    },
     "configuration": {
       "title": "Ripple",
       "properties": {

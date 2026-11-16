@@ -23,6 +23,8 @@ export interface TurnHandlers {
   decide(call: PendingToolCall): Promise<ApprovalDecision>;
   /** Streamed text as it arrives: assistant content, or tool-call argument fragments. */
   onDelta?(text: string, kind: 'content' | 'tool'): void;
+  /** Notified when a tool call is seen or answered. */
+  onToolCall?(call: { id: string; name: string; args: string; status: 'running' | 'done' | 'denied' | 'error' }): void;
   /** True once the user cancelled; pending answers are then not sent. */
   isCancelled?(): boolean;
 }
@@ -190,7 +192,9 @@ export class TrueForgeClient {
         if (event.type === 'turn.created') turnId = event.turnId;
         else if (event.type === 'model.message') messages.set(event.id, event);
         else if (event.type === 'tool.approval_required') pending.push(event);
-        else if (event.type === 'turn.update' && event.state.status === 'paused') {
+        else if (event.type === 'tool.response') {
+          handlers.onToolCall?.({ id: event.toolCallId, name: '', args: '', status: 'done' });
+        } else if (event.type === 'turn.update' && event.state.status === 'paused') {
           paused = true;
           break;
         } else if (event.type === 'turn.done') {

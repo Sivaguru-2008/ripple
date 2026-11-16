@@ -26,12 +26,15 @@ let running: RunningMcpServer;
 beforeAll(async () => {
   running = await startMcpServer({
     checkRun: (token) => void tx.requireActive(token),
-    readText: async (p) => {
+    readText: async (p, runToken) => {
       const t = files[p];
       if (t === undefined) throw new Error(`no such file: ${p}`);
       return t;
     },
     execute: (token, tool, args) => tx.execute(token, tool, args),
+    searchWorkspace: async (query, glob) => ({ text: `matched: ${query}`, isError: false }),
+    retrieveContext: async (token, task, budget) => ({ text: `context for: ${task}`, isError: false }),
+    runCommand: async (token, command) => ({ text: `ran: ${command}`, isError: false }),
     log: () => {},
   });
 });
@@ -63,9 +66,20 @@ describe('Ripple MCP server', () => {
     const client = await connect(tx.beginRun().token);
     const { tools } = await client.listTools();
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
-    expect(Object.keys(byName).sort()).toEqual(['propose_write', 'read_file', 'replace_selection']);
+    expect(Object.keys(byName).sort()).toEqual([
+      'propose_write',
+      'read_file',
+      'replace_selection',
+      'retrieve_context',
+      'run_command',
+      'search_workspace',
+    ]);
     expect(byName.read_file?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.retrieve_context?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.search_workspace?.annotations?.readOnlyHint).toBe(true);
     expect(byName.propose_write?.annotations?.readOnlyHint).toBe(false);
+    expect(byName.run_command?.annotations?.readOnlyHint).toBe(false);
+    expect(byName.run_command?.annotations?.destructiveHint).toBe(true);
     expect(Object.keys(byName.propose_write?.inputSchema.properties ?? {})).toEqual(['path', 'edits']);
     await client.close();
   });
@@ -101,6 +115,22 @@ describe('Ripple MCP server', () => {
     });
     expect(JSON.stringify(result.content)).toMatch(/: applied/);
     expect(files['README.md']).toBe('# Title\nline 2');
+    await client.close();
+  });
+
+  it('retrieve_context, search_workspace and run_command dispatch to host', async () => {
+    const client = await connect(tx.beginRun().token);
+    const ret = await client.callTool({ name: 'retrieve_context', arguments: { task: 'add cli command' } });
+    expect(ret.isError).toBeFalsy();
+    expect(JSON.stringify(ret.content)).toContain('context for: add cli command');
+
+    const search = await client.callTool({ name: 'search_workspace', arguments: { query: 'test' } });
+    expect(search.isError).toBeFalsy();
+    expect(JSON.stringify(search.content)).toContain('matched: test');
+
+    const cmd = await client.callTool({ name: 'run_command', arguments: { command: 'echo hello' } });
+    expect(cmd.isError).toBeFalsy();
+    expect(JSON.stringify(cmd.content)).toContain('ran: echo hello');
     await client.close();
   });
 });

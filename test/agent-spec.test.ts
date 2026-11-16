@@ -10,9 +10,24 @@ describe('agents/ripple-agent.json', () => {
     const spec = parseAgentSpec(load('ripple-agent.json'));
     expect(spec.model.name).toMatch(/^[^/]+\/.+$/);
     const ripple = spec.mcpServers?.find((s) => s.name === 'ripple');
-    expect(ripple?.requireApprovalForTools).toContain('propose_write');
-    expect(ripple?.enableTools).toEqual(['read_file', 'propose_write']);
+    expect(ripple?.requireApprovalForTools).toEqual(['propose_write', 'run_command']);
+    expect(ripple?.enableTools).toEqual([
+      'read_file',
+      'search_workspace',
+      'retrieve_context',
+      'propose_write',
+      'run_command',
+    ]);
+    expect(ripple?.preloadTools).toEqual([
+      'read_file',
+      'search_workspace',
+      'retrieve_context',
+      'propose_write',
+    ]);
+    expect(ripple?.preload).toBe(false);
     expect(spec.instructions).not.toMatch(/epoch/);
+    expect(spec.instructions).toMatch(/retrieve_context/);
+    expect(spec.instructions).toMatch(/run_command/);
   });
 
   it('rejects a spec without a model', () => {

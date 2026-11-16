@@ -490,7 +490,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       // Render Receipt
       if (state.receipt) {
         const r = state.receipt;
-        let html = '<div class="receipt-meta">Used ' + r.usedTokens + ' / ' + r.budgetTokens + ' tokens (' + r.receipt.length + ' files packed)</div>';
+        const remainingTokens = Math.max(0, r.budgetTokens - r.usedTokens);
+        let html = '<div class="receipt-meta"><strong>Budget:</strong> ' + r.budgetTokens + ' tokens | <strong>Used:</strong> ' + r.usedTokens + ' tokens | <strong>Remaining:</strong> ' + remainingTokens + ' tokens (' + r.receipt.length + ' files packed)</div>';
         for (const row of r.receipt) {
           const badgeClass = 'badge badge-' + (row.reason === 'co-change' ? 'cochange' : row.reason);
           html += \`

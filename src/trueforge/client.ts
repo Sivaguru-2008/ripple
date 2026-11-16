@@ -148,6 +148,45 @@ export class TrueForgeClient {
     return session.id;
   }
 
+  /**
+   * Discovers model context-window limit and max output tokens from TrueForge's
+   * model providers configuration.
+   */
+  async fetchModelMetadata(modelName: string): Promise<{ contextLength?: number; maxOutputTokens?: number } | undefined> {
+    try {
+      const providers = await this.client.settings.modelProviders.list();
+      for (const p of providers.data) {
+        const manifest = p.manifest as {
+          models?: Array<{
+            name?: string;
+            modelId?: string;
+            properties?: {
+              contextLength?: number;
+              context_length?: number;
+              maxOutputTokens?: number;
+              max_output_tokens?: number;
+            };
+          }>;
+        };
+        for (const m of manifest.models ?? []) {
+          const directMatch = m.name === modelName || m.modelId === modelName;
+          const prefixedMatch = `${p.name}/${m.name}` === modelName || `${p.name}/${m.modelId}` === modelName;
+          if (directMatch || prefixedMatch) {
+            const props = m.properties;
+            const contextLength = props?.contextLength ?? props?.context_length;
+            const maxOutputTokens = props?.maxOutputTokens ?? props?.max_output_tokens;
+            if (contextLength !== undefined || maxOutputTokens !== undefined) {
+              return { contextLength, maxOutputTokens };
+            }
+          }
+        }
+      }
+    } catch {
+      // TrueForge may be unreachable or settings not yet initialized
+    }
+    return undefined;
+  }
+
   async cancel(sessionId: string): Promise<void> {
     await this.client.sessions.cancel(sessionId);
   }

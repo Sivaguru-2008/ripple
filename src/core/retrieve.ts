@@ -6,6 +6,7 @@
 // receipt: for every file why it is there, the evidence, its token cost, and what was cut.
 import type { CochangeIndex } from './cochange';
 import { withLineNumbers } from './paths';
+import { calculateRetrievalBudget, type ModelContextConfig } from './budget';
 
 export const DEFAULT_BUDGET_TOKENS = 8000;
 export const MIN_BUDGET_TOKENS = 600;
@@ -85,6 +86,9 @@ export interface RetrieveResult {
 
 export interface RetrieveOptions {
   budgetTokens?: number;
+  modelName?: string;
+  contextWindow?: number;
+  perModelConfig?: Record<string, ModelContextConfig>;
   pins?: Pin[];
   /** Omit (or pass an unavailable index) to run without the co-change signal. */
   cochange?: CochangeIndex;
@@ -401,7 +405,18 @@ const SKIP = /(^|\/)(node_modules|\.git|dist|build|out|\.venv|venv|__pycache__|\
 
 /** Ranks workspace files for a task and packs them into the token budget, with a receipt. */
 export async function retrieve(task: string, source: RetrieveSource, options: RetrieveOptions = {}): Promise<RetrieveResult> {
-  const budget = Math.max(MIN_BUDGET_TOKENS, Math.floor(options.budgetTokens ?? DEFAULT_BUDGET_TOKENS));
+  let budget: number;
+  if (options.budgetTokens !== undefined) {
+    budget = Math.max(MIN_BUDGET_TOKENS, Math.floor(options.budgetTokens));
+  } else if (options.contextWindow !== undefined || options.modelName !== undefined) {
+    budget = calculateRetrievalBudget({
+      modelName: options.modelName,
+      contextWindow: options.contextWindow,
+      perModelConfig: options.perModelConfig,
+    }).effectiveBudget;
+  } else {
+    budget = DEFAULT_BUDGET_TOKENS;
+  }
   const pins = options.pins ?? [];
   const notes: string[] = [];
   const docs = await loadDocs(source, (p) => !SKIP.test(p) || pins.some((pin) => pin.path === p));

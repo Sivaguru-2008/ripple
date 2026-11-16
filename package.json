@@ -81,6 +81,11 @@
           "type": "boolean",
           "default": true,
           "description": "Send a short warm-up turn through TrueForge on activation so a local model is loaded before the first edit."
+        },
+        "ripple.perModelConfig": {
+          "type": "object",
+          "default": {},
+          "description": "Per-model context window limits and retrieval token budget overrides."
         }
       }
     },

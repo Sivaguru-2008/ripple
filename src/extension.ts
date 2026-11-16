@@ -4,6 +4,7 @@ import { describePins, parseMentions, resolveMentions } from './core/mentions';
 import type { Pin } from './core/retrieve';
 import { resolveInWorkspace } from './core/paths';
 import { mineCochange } from './core/cochange';
+import { calculateRetrievalBudget, type ModelContextConfig } from './core/budget';
 import { retrieve, type RetrieveResult } from './core/retrieve';
 import { searchWorkspace } from './core/search';
 import { TransactionManager, type FileChange, type Proposal, type TextReplacement } from './core/transactions';
@@ -176,6 +177,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
   let panelProvider: AgentPanelProvider | undefined;
   /** Files and symbols the user @mentioned, per run: always part of that run's context. */
   const pinsByRun = new Map<string, Pin[]>();
+  /** Adaptive retrieval budget resolved per run based on the active model. */
+  const budgetByRun = new Map<string, number>();
+  /** Active model name per run. */
+  const modelByRun = new Map<string, string>();
   const openBufferText = (p: string): string | undefined => {
     try {
       const target = fileUri(p).fsPath;
@@ -236,7 +241,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
         const resolved = { pins: [...userPins, ...fromTask.pins.filter((p) => !userPins.some((u) => u.path === p.path && u.startLine === p.startLine))] };
         // Mined once per workspace and cached; an unavailable history only drops this signal.
         const cochange = await mineCochange(root);
-        const res = await retrieve(task, source, { budgetTokens, pins: resolved.pins, cochange });
+        const runBudget = budgetByRun.get(run.id);
+        const modelName = modelByRun.get(run.id);
+        const finalBudget = runBudget !== undefined
+          ? (budgetTokens ? Math.min(budgetTokens, runBudget) : runBudget)
+          : budgetTokens;
+        const res = await retrieve(task, source, { budgetTokens: finalBudget, modelName, pins: resolved.pins, cochange });
         lastReceipt = res;
         panelProvider?.setReceipt(res);
         return { text: res.text, isError: false };
@@ -468,6 +478,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
 
       try {
         const spec = await loadSpec(context, 'ripple-agent.json', options?.agentPath);
+        const modelName = spec.model.name;
+        let modelMeta: { contextLength?: number; maxOutputTokens?: number } | undefined;
+        try {
+          modelMeta = await tf.fetchModelMetadata(modelName);
+        } catch {
+          // offline or unconfigured
+        }
+        const perModelConfig = vscode.workspace.getConfiguration('ripple').get<Record<string, ModelContextConfig>>('perModelConfig');
+        const adaptiveBudget = calculateRetrievalBudget({
+          modelName,
+          contextWindow: modelMeta?.contextLength,
+          maxOutputTokens: modelMeta?.maxOutputTokens,
+          perModelConfig,
+        });
+        log(`[budget] model ${modelName}: contextWindow=${adaptiveBudget.contextWindow}, reserved=${adaptiveBudget.reservedTokens}, retrievalBudget=${adaptiveBudget.effectiveBudget} (source: ${adaptiveBudget.source})`);
+
         // @file and @symbol mentions in the prompt are resolved now and pinned into context.
         const mentioned = await resolveMentions(parseMentions(instruction), diskSource(workspaceRoot(), openBufferText));
         if (mentioned.pins.length || mentioned.unresolved.length) log(`[agent] mentions:\n${describePins(mentioned)}`);
@@ -491,6 +517,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
             onSession: (runId, sessionId) => {
               panelRunId = runId;
               pinsByRun.set(runId, mentioned.pins);
+              modelByRun.set(runId, modelName);
+              budgetByRun.set(runId, adaptiveBudget.effectiveBudget);
               panelProvider?.setStatus('running', undefined, sessionId);
             },
             onDelta: (text, kind) => {

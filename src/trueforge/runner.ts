@@ -13,6 +13,11 @@ export interface RunRequest {
   /** Approval for tools that are not write tools (none in Task A). */
   decideOther(call: PendingToolCall): Promise<ApprovalDecision>;
   onDelta?(text: string, kind: 'content' | 'tool'): void;
+  /**
+   * Sent once as a follow-up turn on the same session when a turn ends without any write
+   * tool call (small local models sometimes write the call as text).
+   */
+  nudge?: string;
   /** Total attempts for retryable model errors (cold model, timeout). Default 2. */
   attempts?: number;
 }
@@ -71,13 +76,15 @@ export class Runner {
           await tf.cancel(sessionId).catch(() => undefined);
           return this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });
         }
-        const outcome = await tf.runTurn(sessionId, req.message, {
+        let writeCalls = 0;
+        const turn = (text: string) => tf.runTurn(sessionId, text, {
           log,
           ...(req.onDelta ? { onDelta: req.onDelta } : {}),
           isCancelled: () => current.cancelled,
           decide: async (call) => {
             const tool = writeToolName(call.toolName);
             if (!tool) return req.decideOther(call);
+            writeCalls++;
             let args: unknown;
             try {
               args = JSON.parse(call.arguments || '{}');
@@ -89,6 +96,11 @@ export class Runner {
             return answer.allow ? { allow: true } : { allow: false, reason: answer.reason };
           },
         });
+        let outcome = await turn(req.message);
+        if (outcome.status === 'done' && writeCalls === 0 && req.nudge && !current.cancelled) {
+          log(`[run] ${run.id} turn ended without a write tool call; sending one follow-up turn`);
+          outcome = await turn(req.nudge);
+        }
         log(`[run] ${run.id} turn finished: ${outcome.status}${outcome.message ? ` (${outcome.message})` : ''}`);
         if (current.cancelled || outcome.status === 'cancelled') {
           return this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: attempt });

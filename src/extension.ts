@@ -90,12 +90,12 @@ async function loadSpec(context: vscode.ExtensionContext, name: string, override
 function inlineMessage(path: string, languageId: string, startLine: number, endLine: number, selected: string, instruction: string): string {
   return [
     `File: ${path} (selected lines ${startLine + 1}-${endLine}).`,
-    'Selected lines:',
-    '```' + languageId,
+    `Language: ${languageId}.`,
+    '<selected_lines>',
     selected,
-    '```',
+    '</selected_lines>',
     `Instruction: ${instruction}`,
-    'Call replace_selection once with new_text = the complete rewritten selected lines.',
+    'Use the replace_selection tool (a real tool call, not text) with new_text = the complete rewritten selected lines.',
   ].join('\n');
 }
 
@@ -223,6 +223,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
             spec,
             message: inlineMessage(path, doc.languageId, startLine, endLine, selected, instruction),
             selection: { path, startLine, endLine, text: selected },
+            nudge:
+              'You did not call the replace_selection tool, so nothing was proposed. Call the replace_selection tool now as a real tool call (not JSON or Markdown text) with the complete rewritten selected lines.',
             decideOther: askApproval,
             onDelta: (text) => onDelta(text),
           }),

@@ -26,7 +26,7 @@ function decide(messages, tools) {
 
   if (names.some((n) => n?.endsWith('replace_selection'))) {
     if (!called.some((n) => n.endsWith('replace_selection'))) {
-      const code = /```[^\n]*\n([\s\S]*?)\n```/.exec(user)?.[1] ?? '';
+      const code = /<selected_lines>\n([\s\S]*?)\n<\/selected_lines>/.exec(user)?.[1] ?? '';
       return { tool: pick('replace_selection'), args: { new_text: taskAReplacement(code) }, slow: user.includes('SLOW') };
     }
     return { text: `Result: ${String(last?.content).slice(0, 120)}` };

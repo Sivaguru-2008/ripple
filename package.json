@@ -19,6 +19,34 @@
   "contributes": {
     "commands": [
       {
+        "command": "ripple.inlineEdit",
+        "title": "Ripple: Inline Edit Selection"
+      },
+      {
+        "command": "ripple.cancel",
+        "title": "Ripple: Cancel Run"
+      },
+      {
+        "command": "ripple.undoLastChange",
+        "title": "Ripple: Undo Last Applied Change"
+      },
+      {
+        "command": "ripple.acceptHunk",
+        "title": "Ripple: Accept Hunk"
+      },
+      {
+        "command": "ripple.rejectHunk",
+        "title": "Ripple: Reject Hunk"
+      },
+      {
+        "command": "ripple.acceptAllHunks",
+        "title": "Ripple: Accept All Hunks"
+      },
+      {
+        "command": "ripple.rejectAllHunks",
+        "title": "Ripple: Reject All Hunks"
+      },
+      {
         "command": "ripple.smokeTest",
         "title": "Ripple: Smoke Test"
       }
@@ -30,9 +58,47 @@
           "type": "string",
           "default": "http://localhost:8790",
           "description": "Base URL of the local TrueForge server. Use localhost, not 127.0.0.1: on Windows TrueForge listens on ::1 only."
+        },
+        "ripple.warmUp": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send a short warm-up turn through TrueForge on activation so a local model is loaded before the first edit."
         }
       }
-    }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "ripple.acceptHunk",
+          "when": "false"
+        },
+        {
+          "command": "ripple.rejectHunk",
+          "when": "false"
+        },
+        {
+          "command": "ripple.acceptAllHunks",
+          "when": "false"
+        },
+        {
+          "command": "ripple.rejectAllHunks",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "ripple.inlineEdit",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "ripple.cancel",
+        "key": "ctrl+alt+backspace",
+        "mac": "cmd+alt+backspace"
+      }
+    ]
   },
   "scripts": {
     "build": "node esbuild.mjs",

@@ -1,0 +1,24 @@
+{
+  "model": {
+    "name": "ollama/qwen-coder-tools-7b",
+    "params": { "temperature": 0 }
+  },
+  "instructions": "You are Ripple's inline editor inside VS Code. The user selected some lines of a file and gave an instruction. Rewrite the selected lines so they follow the instruction, then call the replace_selection tool exactly once with new_text set to the complete rewritten lines: keep the original indentation, include every selected line you keep, and do not add line numbers, Markdown fences or explanations inside new_text. Do not call replace_selection a second time. The tool result says for each hunk whether it was applied or rejected by the user; after it, reply with one short sentence that uses those exact words. Never say the file was changed unless the result says applied.",
+  "mcp_servers": [
+    {
+      "name": "ripple",
+      "enable_tools": ["replace_selection"],
+      "require_approval_for_tools": ["replace_selection"],
+      "preload": true
+    }
+  ],
+  "config": {
+    "sandbox": { "enabled": false },
+    "web_search": { "enabled": false },
+    "memory": { "enabled": false },
+    "ask_user_questions": { "enabled": false },
+    "dynamic_sub_agents": { "enabled": false },
+    "generative_ui": { "enabled": false },
+    "iteration_limit": 4
+  }
+}

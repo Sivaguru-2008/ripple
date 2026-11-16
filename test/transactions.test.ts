@@ -246,6 +246,15 @@ describe('propose_write arguments', () => {
     expect(out.ok && out.text).not.toMatch(/^3 /m);
   });
 
+  it('strips trailing whitespace from complete lines of new_text, not from its last line', () => {
+    const out = applyTextEdits(BASE.replace(/\n/g, '\r\n'), [
+      { old_text: 'enabled."""', new_text: 'enabled.  \n    \n    More."""' },
+      { old_text: 'val = ', new_text: 'value = ' },
+    ]);
+    expect(out.ok && out.text).toContain('enabled.\r\n\r\n    More."""\r\n');
+    expect(out.ok && out.text).toContain('    value = os.environ');
+  });
+
   it('keeps CRLF line endings', () => {
     const crlf = BASE.replace(/\n/g, '\r\n');
     const out = applyTextEdits(crlf, [{ old_text: 'enabled."""', new_text: 'enabled.\n    More."""' }]);
@@ -263,6 +272,42 @@ describe('replace_selection (inline edit)', () => {
     const out = await tx.execute(run.token, 'replace_selection', { new_text: replacement });
     expect(out.text).toMatch(/hunk \w+ \(line 6\): applied/);
     expect(files['helpers.py']).toBe(`import os\n\n${BASE.replace('"no"}', '"no", "off", "n"}')}`);
+  });
+
+  it('strips trailing whitespace from new lines before the hunks are computed', async () => {
+    const seen: Proposal[] = [];
+    const { tx, files } = setup({ 'helpers.py': BASE }, (p, t) => {
+      seen.push(p);
+      acceptAll(p, t);
+    });
+    const selected = BASE.split('\n').slice(0, 4);
+    const run = tx.beginRun({ path: 'helpers.py', startLine: 0, endLine: 4, text: selected.join('\n') });
+    // What the 7B model sent: a line of four spaces before the new docstring sentence.
+    const replacement = [
+      selected[0],
+      '    """Get whether debug mode should be enabled.',
+      '    ',
+      '    Values treated as false: 0, false, no, off, n.\t ',
+      '    """',
+      selected[2],
+      selected[3]!.replace('"no"}', '"no", "off", "n"}'),
+    ].join('\n');
+    await tx.reviewForApproval(run.id, 'replace_selection', { new_text: replacement });
+    await tx.execute(run.token, 'replace_selection', { new_text: replacement });
+    const added = seen[0]!.hunks.flatMap((h) => h.newLines);
+    expect(added).toContain('');
+    expect(added).toContain('    Values treated as false: 0, false, no, off, n.');
+    expect(added.filter((l) => /[ \t]$/.test(l))).toEqual([]);
+    expect(files['helpers.py']).not.toMatch(/[ \t]$/m);
+  });
+
+  it('leaves trailing whitespace on lines the edit does not change', async () => {
+    const base = 'first line  \nsecond\n';
+    const { tx, files } = setup({ 'notes.md': base }, acceptAll);
+    const run = tx.beginRun({ path: 'notes.md', startLine: 0, endLine: 2, text: 'first line  \nsecond' });
+    await tx.reviewForApproval(run.id, 'replace_selection', { new_text: 'first line  \nsecond, changed  ' });
+    await tx.execute(run.token, 'replace_selection', { new_text: 'first line  \nsecond, changed  ' });
+    expect(files['notes.md']).toBe('first line  \nsecond, changed\n');
   });
 
   it('is refused outside an inline run', async () => {

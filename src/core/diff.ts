@@ -123,6 +123,25 @@ export function stripLineGutter(text: string): { text: string; stripped: boolean
   return { text: parsed.map((p) => p.rest + (p.cr ? '\r' : '')).join('\n'), stripped: true };
 }
 
+/**
+ * Removes spaces and tabs at the end of each line of model-written text (small models add
+ * whitespace-only lines). A line that already exists in `existing` with exactly that
+ * text is kept as it is, so untouched lines produce no hunk. With `wholeLines: false` the last
+ * line is left alone, because it may continue with text that follows it in the file.
+ */
+export function stripTrailingWhitespace(text: string, existing: string, wholeLines: boolean): string {
+  const bare = (line: string): string => (line.endsWith('\r') ? line.slice(0, -1) : line);
+  const keep = new Set(existing.split('\n').map(bare));
+  const lines = text.split('\n');
+  return lines
+    .map((raw, k) => {
+      if (!wholeLines && k === lines.length - 1) return raw;
+      const line = bare(raw);
+      return keep.has(line) ? raw : line.replace(/[ \t]+$/, '') + raw.slice(line.length);
+    })
+    .join('\n');
+}
+
 /** Removes a single surrounding Markdown code fence, if the whole text is one. */
 export function stripCodeFence(text: string): string {
   const match = /^\s*```[^\n]*\n([\s\S]*?)\n?```\s*$/.exec(text);

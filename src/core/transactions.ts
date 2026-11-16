@@ -5,7 +5,7 @@
 // run are rejected and change nothing. Edits are staged as hunks, reviewed one by one,
 // and the accepted hunks are applied together as one editor edit (one undo step).
 import { createHash, randomBytes } from 'node:crypto';
-import { detectEol, diffLines, lineOffsets, splitLines, stripCodeFence, stripLineGutter } from './diff';
+import { detectEol, diffLines, lineOffsets, splitLines, stripCodeFence, stripLineGutter, stripTrailingWhitespace } from './diff';
 
 export type RunState = 'active' | 'finished' | 'cancelled' | 'failed';
 
@@ -419,6 +419,7 @@ export class TransactionManager {
       }
       let replacement = stripLineGutter(stripCodeFence(args['new_text'])).text.replace(/\r\n/g, '\n');
       if (replacement.endsWith('\n') && !sel.text.endsWith('\n')) replacement = replacement.slice(0, -1);
+      replacement = stripTrailingWhitespace(replacement, sel.text, true);
       const newLines = [...lines.slice(0, sel.startLine), ...replacement.split('\n'), ...lines.slice(sel.endLine)];
       return { ok: true, path: sel.path, baseText, newText: newLines.join(detectEol(baseText)) };
     }
@@ -478,6 +479,7 @@ export function applyTextEdits(
     }
     const strippedNew = stripLineGutter(newText);
     if (strippedNew.stripped) newText = strippedNew.text;
+    newText = stripTrailingWhitespace(newText, oldText, false);
 
     if (occurrences === 0) {
       return { ok: false, error: `Edit ${n}: old_text was not found in the file. Copy it exactly from read_file, without line numbers.` };

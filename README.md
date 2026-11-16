@@ -54,6 +54,7 @@ Runtime dependencies (used as libraries, not copied):
 | Package | Version | Licence | Repository |
 |---|---|---|---|
 | `@truefoundry/trueforge-sdk` | 0.185.0 | MIT | https://github.com/truefoundry/trueforge |
+| `@truefoundry/trueforge` (server, started with `npx`) | 0.185.1 | MIT | https://github.com/truefoundry/trueforge |
 | `@modelcontextprotocol/sdk` | 1.32.2 | MIT | https://github.com/modelcontextprotocol/typescript-sdk |
 | `zod` | 4.6.7 | MIT | https://github.com/colinhacks/zod |
 

@@ -139,7 +139,12 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:vscode": "npm run build && node test/integration/runTest.mjs"
+    "test:vscode": "npm run build && node test/integration/runTest.mjs",
+    "stack": "node scripts/start-stack.mjs",
+    "models": "node scripts/setup-models.mjs",
+    "adapter": "node scripts/gemini-proxy.mjs",
+    "task-b": "npm run build && node test/integration/runTaskBEval.mjs",
+    "demo:prepare": "node scripts/prepare-demo.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

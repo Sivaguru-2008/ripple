@@ -4,29 +4,27 @@ A VS Code extension that is a coding agent whose agent loop runs on
 [TrueForge](https://github.com/truefoundry/trueforge). Built for Round 1 of the
 TrueFoundry Forge-a-thon.
 
-Status: Day 1, round trip only (session, streamed turn, MCP tool call, approval pause).
+## Quick start
 
-## Quick start (Windows, PowerShell)
+Full steps, troubleshooting and every bottleneck seen so far: [docs/runbook.md](docs/runbook.md).
 
-1. Start TrueForge in local mode, allowing it to reach the extension's MCP server on
-   loopback:
+1. `npm install`
+2. Put a model key in `.env` (git-ignored), for example `GEMINI_API_KEY=...` from Google AI
+   Studio's free tier. Keys never go in this repository.
+3. `npm run demo:prepare`: clones pallets/flask 3.1.3 into `../flask-demo` and writes
+   `.env.demo` so the agent's test commands use a Python with pytest.
+4. `npm run stack`, and leave it running. It starts TrueForge in local mode
+   (`npx @truefoundry/trueforge@0.185.1`, with `OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1"]'` so
+   TrueForge may reach the extension's MCP server on loopback), starts the model adapter
+   (`scripts/gemini-proxy.mjs`), and registers the providers in
+   `config/trueforge.models.example.json` in TrueForge.
+5. Open this folder in VS Code and run the launch configuration **Run Ripple on the Flask
+   demo**. Ripple registers its MCP server in TrueForge as the connector `ripple` and loads the
+   agent from `agents/ripple-agent.json` (inline edits use `agents/ripple-inline.json`).
 
-   ```powershell
-   $env:OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1"]'; npx @truefoundry/trueforge@0.185.1
-   ```
-
-   `OUTBOUND_URL_ALLOWED_HOSTS` lifts TrueForge's SSRF guard for loopback only; without it
-   TrueForge refuses to connect to `http://127.0.0.1:<port>/mcp`.
-2. Open http://localhost:8790, go to **Settings → Models**, and add a provider. Then edit
-   `model.name` in `agents/ripple-agent.json` to a model you configured
-   (format `provider/model`). Keys stay in TrueForge, never in this repo.
-3. `npm install`, then open this folder in VS Code and press **F5** (runs `npm run build`
-   first). On activation Ripple starts its MCP server and registers it in TrueForge as
-   the connector `ripple`.
-4. In the Extension Development Host, open any folder that has a `README.md`, run
-   **Ripple: Smoke Test** from the Command Palette, and watch the **Ripple** output channel.
-   Click **Allow** or **Deny** on the notification when the agent wants `propose_write`.
-   Nothing is written to disk either way.
+Models are configured only in TrueForge; Ripple never calls a provider. The adapter is a model
+endpoint registered in TrueForge, not part of the extension. Switch models by editing
+`model.name` (`provider/model`) in `agents/*.json` and `ripple.fallbackModel`.
 
 The `ripple.trueforgeBaseUrl` setting defaults to `http://localhost:8790`. Use `localhost`,
 not `127.0.0.1`: on Windows TrueForge listens on `::1` only.

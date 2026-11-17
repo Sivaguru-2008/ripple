@@ -8,6 +8,17 @@
       "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}"],
       "outFiles": ["${workspaceFolder}/dist/**/*.js"],
       "preLaunchTask": "npm: build"
+    },
+    {
+      // Opens the Flask 3.1.3 clone prepared by `npm run demo:prepare` (../flask-demo), with
+      // PATH and PYTHONPATH from .env.demo so the agent's `python -m pytest` imports that clone.
+      "name": "Run Ripple on the Flask demo",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/../flask-demo"],
+      "envFile": "${workspaceFolder}/.env.demo",
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "preLaunchTask": "npm: build"
     }
   ]
 }

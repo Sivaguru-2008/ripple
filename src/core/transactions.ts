@@ -274,16 +274,18 @@ export class TransactionManager {
    * Discards held/uncommitted proposals and resets staged text to disk for a run,
    * keeping the run active (used during model fallback / retry to clear stale proposals).
    */
-  discardUncommitted(runId: string, reason = 'retry with fresh model'): void {
+  discardUncommitted(runId: string, reason = 'retry with fresh model', options: { keepAccepted?: boolean } = {}): void {
+    // keepAccepted: an interrupted agent run continues; only edits still awaiting review are
+    // dropped. Accepted (held) edits and the staged text built from them stay.
     const staged = this.stagedFiles.get(runId);
-    if (staged) {
+    if (staged && !options.keepAccepted) {
       for (const [, f] of staged) {
         f.current = f.disk;
       }
     }
     for (const p of this.proposals) {
       if (p.runId !== runId) continue;
-      if (p.state === 'held' || p.state === 'reviewing' || p.state === 'decided') {
+      if ((p.state === 'held' && !options.keepAccepted) || p.state === 'reviewing' || p.state === 'decided') {
         p.state = 'discarded';
         for (const h of p.hunks) {
           if (h.status === 'pending' || h.status === 'held' || h.status === 'accepted') {
@@ -407,6 +409,33 @@ export class TransactionManager {
 
   proposalsFor(runId: string): Proposal[] {
     return this.proposals.filter((p) => p.runId === runId);
+  }
+
+  /**
+   * What this run has already changed, per file, from Ripple's own records. Given back to the
+   * agent with retrieve_context: after TrueForge compacts the conversation the summary keeps the
+   * plan but loses which edits were made, and agents were seen redoing work.
+   */
+  progressSummary(runId: string): string | undefined {
+    const byPath = new Map<string, string[]>();
+    for (const p of this.proposalsFor(runId)) {
+      if (p.state === 'discarded') continue;
+      for (const h of p.hunks) {
+        const first = h.newLines.find((l) => l.trim())?.trim().slice(0, 80);
+        const what = first ? `${describeLines(h)}: ${first}` : `${describeLines(h)} (lines removed)`;
+        let line: string | undefined;
+        if (h.status === 'held' || h.status === 'applied' || h.status === 'accepted') line = `done, ${what}`;
+        else if (h.status === 'rejected') line = `rejected by the user${h.reason ? ` (${h.reason})` : ''}, ${what}`;
+        if (!line) continue;
+        const list = byPath.get(p.path) ?? [];
+        if (!list.includes(line)) list.push(line);
+        byPath.set(p.path, list);
+      }
+    }
+    if (byPath.size === 0) return undefined;
+    const out = ['Changes already made in this run (from Ripple\'s records; line numbers are those of the file at the time). Do not make them again:'];
+    for (const [path, lines] of byPath) out.push(`- ${path}: ${lines.join('; ')}`);
+    return out.join('\n');
   }
 
   getProposal(id: string): Proposal | undefined {
@@ -802,22 +831,38 @@ function nearestHint(base: string, oldText: string): string {
 function insertPosition(
   base: string,
   eol: string,
-  after: unknown,
+  requested: unknown,
   lineText: unknown,
 ): { ok: true; at: number; needsEolBefore: boolean } | { ok: false; error: string } {
   const lines = base.split(eol);
   const count = base.endsWith(eol) ? lines.length - 1 : lines.length;
-  if (typeof after !== 'number' || !Number.isInteger(after) || after < 0 || after > count) {
+  // A line number just past the end is a miscount when line_text names a real line; checked below.
+  const slack = typeof lineText === 'string' && lineText.trim() ? 3 : 0;
+  if (typeof requested !== 'number' || !Number.isInteger(requested) || requested < 0 || requested > count + slack) {
     return { ok: false, error: `insert_after_line must be a whole number from 0 to ${count} (the file has ${count} lines).` };
   }
+  let after = requested;
   if (after > 0) {
     const actual = lines[after - 1] ?? '';
     if (typeof lineText !== 'string' || lineText.trim() === '') {
       return { ok: false, error: `give line_text, the current text of line ${after}, which is: ${JSON.stringify(actual.trim())}.` };
     }
-    const given = stripLineGutter(lineText).text.trim();
-    if (given !== actual.trim()) {
-      return { ok: false, error: `line ${after} is now ${JSON.stringify(actual.trim())}, not ${JSON.stringify(given)}; the file may have changed, so read it again.` };
+    // Models often quote several lines ending at the anchor, or miscount by a line or two.
+    // Accept the block when it ends at a line within 3 of the one given and that place is unique.
+    const block = stripLineGutter(lineText.replace(/\r\n/g, '\n')).text.split('\n').map((l) => l.trim());
+    while (block.length > 1 && block.at(-1) === '') block.pop();
+    while (block.length > 1 && block[0] === '') block.shift();
+    const endsAt = (end: number): boolean =>
+      end >= block.length && end <= count && block.every((l, k) => (lines[end - block.length + k] ?? '').trim() === l);
+    if (!endsAt(after)) {
+      const near = [-3, -2, -1, 1, 2, 3].map((d) => after + d).filter((end) => endsAt(end));
+      if (near.length !== 1) {
+        return {
+          ok: false,
+          error: `line ${after} is now ${JSON.stringify(actual.trim())}, not ${JSON.stringify(block.at(-1))}; the file may have changed, so read it again.`,
+        };
+      }
+      after = near[0]!;
     }
   }
   let at = 0;

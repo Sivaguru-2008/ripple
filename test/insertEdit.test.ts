@@ -32,13 +32,34 @@ describe('insert edits', () => {
   });
 
   it('refuses a stale line number and says what the line is now', () => {
-    const r = applyTextEdits(base, [{ insert_after_line: 2, line_text: 'import click', new_text: 'x' }]);
-    expect(r).toEqual({ ok: false, error: expect.stringMatching(/line 2 is now "", not "import click"; .*read it again/) });
+    const r = applyTextEdits(base, [{ insert_after_line: 2, line_text: 'import json', new_text: 'x' }]);
+    expect(r).toEqual({ ok: false, error: expect.stringMatching(/line 2 is now "", not "import json"; .*read it again/) });
   });
 
   it('asks for line_text when it is missing, quoting the line', () => {
     const r = applyTextEdits(base, [{ insert_after_line: 3, new_text: 'x' }]);
     expect(r).toEqual({ ok: false, error: expect.stringMatching(/give line_text.*"def routes_command\(\):"/) });
+  });
+
+  it('accepts several quoted lines that end at the anchor line', () => {
+    const r = applyTextEdits(base, [{ insert_after_line: 4, line_text: 'def routes_command():\n    pass', new_text: '\n\ndef config_command():\n    pass' }]);
+    expect(r.ok && r.text).toContain('    pass\n\n\ndef config_command():');
+  });
+
+  it('corrects a line number that is off by up to 3 when the quoted line is unique nearby', () => {
+    const r = applyTextEdits(base, [{ insert_after_line: 6, line_text: '    pass', new_text: 'print(1)' }]);
+    expect(r.ok && r.text).toBe(base.replace('    pass\n', '    pass\nprint(1)\n'));
+  });
+
+  it('corrects a line number just past the end of the file', () => {
+    const r = applyTextEdits('a\nb\n', [{ insert_after_line: 3, line_text: 'b', new_text: 'c' }]);
+    expect(r).toEqual({ ok: true, text: 'a\nb\nc\n' });
+  });
+
+  it('refuses when the quoted line occurs more than once nearby', () => {
+    const twice = 'x\npass\npass\ny\n';
+    const r = applyTextEdits(twice, [{ insert_after_line: 1, line_text: 'pass', new_text: 'z' }]);
+    expect(r.ok).toBe(false);
   });
 
   it('refuses a line number past the end', () => {

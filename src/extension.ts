@@ -274,7 +274,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
         const res = await retrieve(task, source, { budgetTokens: finalBudget, modelName, pins: resolved.pins, cochange, style });
         lastReceipt = res;
         panelProvider?.setReceipt(res);
-        return { text: res.text, isError: false };
+        // After a compaction agents call retrieve_context again; tell them what is already done.
+        const progress = tx.progressSummary(run.id);
+        if (progress) log(`[retrieve] ${run.id}: progress given to the agent (${progress.split('\n').length - 1} file(s))`);
+        return { text: progress ? `${progress}\n\n${res.text}` : res.text, isError: false };
       } catch (err) {
         return { text: `retrieve failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }

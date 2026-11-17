@@ -27,9 +27,9 @@ describe('agents/ripple-agent.json', () => {
     ]);
     // Every tool up front: no list_tools / call_tool steps, each of which resends the whole history.
     expect(ripple?.preload).toBe(true);
-    // Compaction is the TrueForge context-engineering feature this agent relies on: a Task B run
-    // passes 12,000 input tokens after about ten steps, and older steps are then summarised.
-    expect(spec.config?.contextManagement?.compaction).toEqual({ enabled: true, trigger: { type: 'input_tokens', value: 12000 } });
+    // Compaction is the TrueForge context-engineering feature this agent relies on. At 12,000 a
+    // passing Task B run compacted 14 times and re-read after each; 20,000 keeps it to a few.
+    expect(spec.config?.contextManagement?.compaction).toEqual({ enabled: true, trigger: { type: 'input_tokens', value: 20000 } });
     expect(spec.instructions).not.toMatch(/epoch/);
     expect(spec.instructions).toMatch(/retrieve_context/);
     expect(spec.instructions).toMatch(/run_command/);

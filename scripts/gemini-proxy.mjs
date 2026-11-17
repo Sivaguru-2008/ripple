@@ -11,7 +11,9 @@
 // Authorization header TrueForge sends is forwarded unchanged and never logged.
 import * as http from 'node:http';
 
-const TARGET_BASE = 'https://generativelanguage.googleapis.com/v1beta/openai';
+// GEMINI_PROXY_TARGET and GEMINI_PROXY_RETRY_MS exist for testing against a fake provider.
+const TARGET_BASE = process.env.GEMINI_PROXY_TARGET ?? 'https://generativelanguage.googleapis.com/v1beta/openai';
+const RETRY_MS = Number(process.env.GEMINI_PROXY_RETRY_MS ?? 0);
 const GROQ_BASE = 'https://api.groq.com/openai/v1';
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 const ROUTES = {
@@ -216,23 +218,54 @@ export function startGeminiProxy(port = PORT) {
       const targetBase = route ? ROUTES[route] : TARGET_BASE;
       const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
 
+      // Streamed requests get response headers at once and a keep-alive comment every 10 s.
+      // TrueForge gives up after 60 s without headers ("Headers Timeout Error"), which a slow or
+      // overloaded provider exceeded mid-run; with the stream already open, waiting is safe.
+      const streaming = bodyObj?.stream === true;
+      let keepAlive;
+      if (streaming) {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+        res.write(': gemini-proxy connected\n\n');
+        keepAlive = setInterval(() => {
+          if (!res.writableEnded) res.write(': keep-alive\n\n');
+        }, 10000);
+      }
+      // Stop asking the provider if TrueForge goes away (for example the run was cancelled).
+      const abort = new AbortController();
+      res.on('close', () => {
+        if (!res.writableFinished) abort.abort();
+      });
+      /** Ends an already-open stream with an error event TrueForge reports as a model error. */
+      const streamError = (status, text) => {
+        let message = text;
+        try {
+          const json = JSON.parse(text);
+          message = (Array.isArray(json) ? json[0] : json)?.error?.message ?? text;
+        } catch {
+          // plain text
+        }
+        res.write(`data: ${JSON.stringify({ error: { message: `${status} ${String(message).slice(0, 1500)}`, code: status } })}\n\n`);
+        res.end();
+      };
+
       try {
         const send = () =>
           fetch(`${targetBase}${upstreamPath}`, {
             method: req.method,
             headers: forwardHeaders(Object.entries(req.headers)),
             body: hasBody ? (bodyObj ? JSON.stringify(bodyObj) : rawBody) : undefined,
+            signal: abort.signal,
           });
-        // Ride out short overloads (503, 500, per-minute 429) here. TrueForge gives up after
-        // 60 s without response headers, so the waiting stops well before that. A daily quota
-        // is not retried: waiting cannot fix it.
+        // Ride out overloads (503, 500, per-minute 429). With an open stream there is no header
+        // deadline, so waiting can be longer. A daily quota is not retried: waiting cannot fix it.
+        const budget = RETRY_MS || (streaming ? 150000 : 40000);
         const started = Date.now();
         let upstream = await send();
-        for (const wait of [2000, 4000, 8000, 12000]) {
+        for (const wait of [2000, 4000, 8000, 15000, 30000, 30000, 30000, 30000]) {
           if (![429, 500, 503].includes(upstream.status)) break;
           const peek = await upstream.clone().text();
           if (upstream.status === 429 && /per.?day|PerDay|daily/i.test(peek)) break;
-          if (Date.now() - started + wait > 40000) break;
+          if (Date.now() - started + wait > budget) break;
           if (VERBOSE) console.log(`[gemini-proxy] ${route ?? 'gemini'} ${upstream.status}; retrying in ${wait / 1000}s`);
           await new Promise((r) => setTimeout(r, wait));
           upstream = await send();
@@ -242,7 +275,22 @@ export function startGeminiProxy(port = PORT) {
         let captured = 0;
         let usage;
 
-        if (isStream && upstream.body) {
+        if (streaming && !(upstream.ok && isStream && upstream.body)) {
+          const text = await upstream.text();
+          if (VERBOSE) console.log(`[gemini-proxy] upstream error body: ${text.slice(0, 600)}`);
+          streamError(upstream.status, text);
+        } else if (streaming) {
+          const collector = createStreamCollector();
+          const decoder = new TextDecoder();
+          for await (const chunk of upstream.body) {
+            res.write(chunk);
+            collector.push(decoder.decode(chunk, { stream: true }));
+          }
+          collector.push('\n');
+          captured = collector.finish();
+          usage = collector.usage();
+          res.end();
+        } else if (isStream && upstream.body) {
           res.writeHead(upstream.status, responseHeaders);
           const collector = createStreamCollector();
           const decoder = new TextDecoder();
@@ -283,8 +331,16 @@ export function startGeminiProxy(port = PORT) {
         }
       } catch (err) {
         if (VERBOSE) console.log(`[gemini-proxy] ${req.method} ${upstreamPath} failed: ${String(err)}`);
-        if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: `gemini-proxy: ${String(err)}` } }));
+        if (res.writableEnded) {
+          // the client already went away
+        } else if (streaming) {
+          streamError(502, `gemini-proxy: ${String(err)}`);
+        } else {
+          if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: `gemini-proxy: ${String(err)}` } }));
+        }
+      } finally {
+        clearInterval(keepAlive);
       }
     });
 

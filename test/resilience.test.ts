@@ -268,6 +268,107 @@ describe('Task C Resilience & Model Fallback', () => {
     expect(disk['test.txt']).toBe('original content');
   });
 
+  it('continues an interrupted agent run from its accepted edits instead of starting over', async () => {
+    const { runner, mockTf, primarySpec, fallbackSpec, tx, disk, logs } = createFixture({ 'a.txt': 'one\n', 'b.txt': 'two\n' });
+    const messages: string[] = [];
+    let attempt = 0;
+    mockTf.runTurn.mockImplementation(async (_s: string, msg: string) => {
+      attempt++;
+      messages.push(msg);
+      const run = tx.activeRun()!;
+      if (attempt === 1) {
+        await tx.execute(run.token, 'propose_write', { path: 'a.txt', edits: [{ old_text: 'one', new_text: 'ONE' }] });
+        // Accepted edits written for a test command, then the model times out.
+        await tx.commit(run.id);
+        return { status: 'error', message: '[Model Error] Cannot connect to API: Headers Timeout Error' };
+      }
+      await tx.execute(run.token, 'propose_write', { path: 'b.txt', edits: [{ old_text: 'two', new_text: 'TWO' }] });
+      return { status: 'done' };
+    });
+
+    const result = await runner.run({ spec: primarySpec, fallbackSpec, message: 'Change both files', deferred: true, decideOther: async () => ({ allow: true }), attempts: 2 });
+
+    expect(result.status).toBe('done');
+    expect(result.fallback).toBeUndefined();
+    expect(disk['a.txt']).toBe('ONE\n');
+    expect(disk['b.txt']).toBe('TWO\n');
+    // The second attempt is told what is already done.
+    expect(messages[1]).toContain('was interrupted by a model error');
+    expect(messages[1]).toMatch(/- a\.txt: done/);
+    expect(logs.some((l) => l.includes('keeps its accepted changes'))).toBe(true);
+  });
+
+  it('carries kept edits over to the fallback model too', async () => {
+    const { runner, mockTf, primarySpec, fallbackSpec, tx, disk } = createFixture({ 'a.txt': 'one\n' });
+    const messages: string[] = [];
+    let attempt = 0;
+    mockTf.runTurn.mockImplementation(async (_s: string, msg: string) => {
+      attempt++;
+      messages.push(msg);
+      const run = tx.activeRun()!;
+      if (attempt === 1) {
+        await tx.execute(run.token, 'propose_write', { path: 'a.txt', edits: [{ old_text: 'one', new_text: 'ONE' }] });
+        return { status: 'error', message: '503 Service Unavailable' };
+      }
+      return { status: 'done' };
+    });
+
+    const result = await runner.run({ spec: primarySpec, fallbackSpec, message: 'Change a', deferred: true, decideOther: async () => ({ allow: true }), attempts: 1 });
+
+    expect(result.status).toBe('done');
+    expect(result.fallback?.to).toBe('fallback/qwen-7b');
+    expect(messages[1]).toMatch(/- a\.txt: done/);
+    expect(disk['a.txt']).toBe('ONE\n');
+  });
+
+  it('rolls back kept edits when every attempt fails, leaving the workspace unchanged', async () => {
+    const { runner, mockTf, primarySpec, fallbackSpec, tx, disk } = createFixture({ 'a.txt': 'one\n' });
+    let attempt = 0;
+    mockTf.runTurn.mockImplementation(async () => {
+      attempt++;
+      const run = tx.activeRun()!;
+      if (attempt === 1) {
+        await tx.execute(run.token, 'propose_write', { path: 'a.txt', edits: [{ old_text: 'one', new_text: 'ONE' }] });
+        await tx.commit(run.id);
+      }
+      return { status: 'error', message: '[Model Error] Cannot connect to API: Headers Timeout Error' };
+    });
+
+    const result = await runner.run({ spec: primarySpec, fallbackSpec, message: 'Change a', deferred: true, decideOther: async () => ({ allow: true }), attempts: 1 });
+
+    expect(result.status).toBe('error');
+    expect(disk['a.txt']).toBe('one\n');
+  });
+
+  it('goes straight to the fallback on a used-up daily quota, keeping accepted edits', async () => {
+    const { runner, mockTf, primarySpec, fallbackSpec, tx, disk } = createFixture({ 'a.txt': 'one\n' });
+    const models: string[] = [];
+    const messages: string[] = [];
+    mockTf.createSession.mockImplementation(async (spec: { model: { name: string } }) => {
+      models.push(spec.model.name);
+      return `s-${models.length}`;
+    });
+    let attempt = 0;
+    mockTf.runTurn.mockImplementation(async (_s: string, msg: string) => {
+      attempt++;
+      messages.push(msg);
+      const run = tx.activeRun()!;
+      if (attempt === 1) {
+        await tx.execute(run.token, 'propose_write', { path: 'a.txt', edits: [{ old_text: 'one', new_text: 'ONE' }] });
+        return { status: 'error', message: '[Model Error] 429 You exceeded your current quota, please check your plan and billing details.' };
+      }
+      return { status: 'done' };
+    });
+
+    const result = await runner.run({ spec: primarySpec, fallbackSpec, message: 'Change a', deferred: true, decideOther: async () => ({ allow: true }), attempts: 3 });
+
+    // No second attempt on the primary: attempts allowed 3, but the quota cannot recover.
+    expect(models).toEqual(['primary/bad-endpoint', 'fallback/qwen-7b']);
+    expect(result.status).toBe('done');
+    expect(messages[1]).toMatch(/- a\.txt: done/);
+    expect(disk['a.txt']).toBe('ONE\n');
+  });
+
   it('performs successful end-to-end recovery preserving transaction identity', async () => {
     const { runner, mockTf, primarySpec, fallbackSpec, tx, disk, logs } = createFixture();
 

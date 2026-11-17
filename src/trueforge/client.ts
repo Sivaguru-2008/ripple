@@ -75,10 +75,20 @@ export interface TurnOutcome {
  * that is briefly unreachable, rate limits and 5xx. Seen in Day 1 runs (AGENTS.md section 9).
  */
 export function isRetryableModelError(message: string | undefined): boolean {
-  if (!message) return false;
+  if (!message || isQuotaExhausted(message)) return false;
   return /headers timeout|timed? ?out|cannot connect to api|econnrefused|econnreset|socket hang up|\b(429|502|503|504)\b|overloaded|connection failure|network error|failed to fetch/i.test(
     message,
   );
+}
+
+/**
+ * A daily or plan quota is used up (HTTP 429 that waiting a few seconds cannot fix). Retrying
+ * the same model wastes the run; switching to the fallback model can still finish it.
+ * Seen: Google "You exceeded your current quota", OpenRouter "free-models-per-day".
+ */
+export function isQuotaExhausted(message: string | undefined): boolean {
+  if (!message) return false;
+  return /exceeded your current quota|per.?day|PerDay|daily (limit|quota)|free-models-per-day|insufficient_quota|quota exceeded/i.test(message);
 }
 
 function httpStatus(err: unknown): number | undefined {

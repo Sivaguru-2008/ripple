@@ -2,7 +2,7 @@
 // No `vscode` imports: the extension supplies the UI callbacks.
 import type { TrueForgeApi } from '@truefoundry/trueforge-sdk';
 import type { SelectionTarget, TransactionManager } from '../core/transactions';
-import { isRetryableModelError, unwrapToolCall, type ApprovalDecision, type CompactionInfo, type PendingToolCall, type ToolCallUpdate, type TrueForgeClient } from './client';
+import { isQuotaExhausted, isRetryableModelError, unwrapToolCall, type ApprovalDecision, type CompactionInfo, type PendingToolCall, type ToolCallUpdate, type TrueForgeClient } from './client';
 
 const WRITE_TOOLS = ['propose_write', 'replace_selection'] as const;
 
@@ -105,6 +105,8 @@ export class Runner {
     let switchedToFallback = false;
     let fallback: RunResult['fallback'];
     let totalAttempts = 0;
+    /** Set after an interrupted attempt: what the next attempt is told about the kept changes. */
+    let continuation: string | undefined;
 
     for (let attempt = 1; ; attempt++) {
       totalAttempts = attempt;
@@ -152,7 +154,7 @@ export class Runner {
           },
         });
 
-        let outcome = await turn(req.message);
+        let outcome = await turn(continuation ? `${req.message}\n\n${continuation}` : req.message);
         if (outcome.status === 'done' && writeCalls === 0 && req.nudge && !current.cancelled) {
           log(`[run] ${run.id} turn ended without a write tool call; sending one follow-up turn`);
           outcome = await turn(req.nudge);
@@ -198,19 +200,36 @@ export class Runner {
         log(`[run] ${run.id} failed: ${failure}`);
       }
 
-      // Check if any proposals were already permanently applied
-      const applied = tx.proposalsFor(run.id).some((p) => p.state === 'applied');
-      if (applied) {
+      // An agent run interrupted by the model (timeout, overload, connection) keeps the edits the
+      // user already accepted, and the next attempt continues from them. A model that misbehaved
+      // (invalid output) starts again clean. Either way, if every attempt fails the whole run is
+      // rolled back, so the workspace ends unchanged.
+      const proposals = tx.proposalsFor(run.id);
+      const accepted = proposals.some((p) => p.state === 'held' || p.state === 'applied');
+      // A used-up quota is an interruption too: the fallback model can carry on from the kept edits.
+      const canContinue = run.deferred && accepted && (isRetryableModelError(failure) || isQuotaExhausted(failure));
+      if (!canContinue && proposals.some((p) => p.state === 'applied')) {
         await this.end(run.id, 'failed', undefined);
-        return { status: 'error', message: failure, runIds, attempts: totalAttempts };
+        return { status: 'error', message: failure, runIds, attempts: totalAttempts, model: activeSpec.model.name, ...(fallback ? { fallback } : {}) };
       }
 
       if (current.cancelled) {
         return await this.end(run.id, 'cancelled', { status: 'cancelled', runIds, attempts: totalAttempts });
       }
 
-      // Clean uncommitted or stale proposals from the failed attempt, keeping transaction run intact
-      tx.discardUncommitted(run.id, `failure on ${activeSpec.model.name}: ${failure}`);
+      if (canContinue) {
+        tx.discardUncommitted(run.id, `interrupted on ${activeSpec.model.name}: ${failure}`, { keepAccepted: true });
+        const done = tx.progressSummary(run.id) ?? '';
+        continuation =
+          `Note from Ripple: a previous attempt on ${activeSpec.model.name} was interrupted by a model error (${failure}). ` +
+          `The changes the user accepted are kept.\n${done}\n` +
+          'Continue the task from there: read the current lines where needed, make only the remaining changes, then run the tests.';
+        log(`[run] ${run.id} keeps its accepted changes; the next attempt continues from them`);
+      } else {
+        // Clean uncommitted or stale proposals from the failed attempt, keeping transaction run intact
+        tx.discardUncommitted(run.id, `failure on ${activeSpec.model.name}: ${failure}`);
+        continuation = undefined;
+      }
 
       // Bounded retries for transient/retryable errors on primary model
       if (!switchedToFallback && isRetryableModelError(failure) && attempt < maxAttempts) {

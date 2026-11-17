@@ -259,6 +259,29 @@ Honest notes:
   `app.test_cli_runner()` before the command was registered on `app.cli`.
 - One run, not a pass rate.
 
+### Making Task B repeatable (17 Nov, 22:00 to 23:30)
+
+Three more Task B runs, each after fixing what the previous one showed, plus a durable setup.
+
+| Run | Result | What it showed | Fixed since |
+|---|---|---|---|
+| 2 (`npm run task-b` defaults) | **Pass**, 3 files (`cli.py`, `test_cli.py`, `cli.rst`), 59 passed, masked JSON, undo clean | 4 compactions (was 14), the progress note reached the agent each time; 7 insert edits refused (multi-line `line_text`, line numbers off by 1 to 3); about 20 test commands spent on a test that invoked the command through `app.cli` | `line_text` may quote several lines ending at the anchor; a line number off by up to 3 is corrected when the match is unique; instructions: read a similar existing test first |
+| 3 | Fail after 222 s: `Headers Timeout Error` | Google took over 60 s; Ripple rolled back and stopped because edits were already on disk | adapter answers streamed requests at once with keep-alives (checked against TrueForge with a fake provider: a 75 s answer completes; an overload ends as a retryable `503` model error); an interrupted agent run keeps its accepted edits and the next attempt or fallback continues from them, told exactly what is done; if every attempt fails, all is rolled back |
+| 4 | Every Task B check passed, **finished by the fallback model** | `gemini-3.1-flash-lite` hit its free daily quota (`429 You exceeded your current quota`) mid-run; Ripple kept its edits to `cli.py` and `cli.rst`, and `gemini-3.5-flash-lite` added the test and the rest: 59 passed, `flask --help` lists `config`, masked JSON (checked by hand on the clone) | a used-up quota goes straight to the fallback instead of a same-model retry; the harness runs every check even after a fallback and records `finishedOn`, but does not count it as a primary pass |
+
+Durable setup (all committed except keys): `npm run stack` starts TrueForge, the adapter and the
+model registration; `npm run models` registers providers from `config/trueforge.models.example.json`
+with keys from `.env`; `npm run demo:prepare` clones Flask 3.1.3 to `../flask-demo` and writes
+`.env.demo` (a Python with pytest, `PYTHONPATH=src`) for the "Run Ripple on the Flask demo"
+launch configuration; `docs/runbook.md` lists every bottleneck and its fix. The agent now uses
+`gemini/gemini-3-1-flash-lite` with compaction at 20,000 tokens.
+
+Tests: 160 of 160 unit tests; full mock suite passes (one flaky failure in its VS Code `undo`
+step, passed on rerun, noted in the runbook).
+
+Task B tally on real models so far: 2 passes on the primary model (runs 1 and 2), 1 completion
+via fallback (run 4), 1 infrastructure failure since fixed (run 3).
+
 ## Phase 2: independent verification (`E:\ripple-verify`, `963d790`)
 
 | Check | Result |

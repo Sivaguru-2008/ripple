@@ -218,6 +218,47 @@ Mode, compaction, skills). Deferred tool loading was switched off earlier (model
 
 Tests: 139 of 139 unit tests; the agent-spec test now checks the compaction setting.
 
+### First Task B pass on a real model (17 Nov, 21:30)
+
+Root causes from the earlier real runs were fixed without rerunning Task B, then one confirming run:
+
+- **Insert edits.** `propose_write` accepts `{insert_after_line, line_text, new_text}` next to
+  `{old_text, new_text}`. Adding code needs no copied text; `line_text` is checked, so a stale line
+  number fails with the line's current text. Most failed edits in earlier runs were copy errors.
+- **Test environment.** The harness gives the agent's commands what an activated virtualenv gives
+  a developer: the test Python first on `PATH` and `PYTHONPATH=src`. Without it, `pytest` imported
+  the installed Flask, failed, and the model tried `pip install`.
+- **Instructions** say: decide the files from the receipt, read several ranges per step, one
+  `propose_write` per file, insert edits for new code, `run_command` only for tests.
+
+Run: `gemini/gemini-3-1-flash-lite` (`gemini-3.1-flash-lite`, Google AI Studio free tier, $0),
+fresh flask 3.1.3 clone, no files named. **Passed every check in the harness.**
+
+| Check | Result |
+|---|---|
+| Files edited, found by the agent | 4: `src/flask/cli.py`, `tests/test_cli.py`, `docs/cli.rst`, `src/flask/app.py` |
+| Receipt | `cli.py` (co-change with `tests/test_cli.py`, 48 commits), `tests/test_cli.py`, `docs/cli.rst` (19 commits), `app.py`, `CHANGES.rst`, `sansio/app.py`; 6 evicted as beyond the map's top 6 |
+| Agent's own test run | `pytest tests/test_cli.py` → ok, after fixing its test |
+| `pytest tests/test_cli.py -q` (harness) | 59 passed |
+| `flask --help` | lists `config` |
+| Masking | `SECRET_KEY`, `SECRET_KEY_FALLBACKS`, `API_TOKEN`, `DB_PASSWORD`, `SIGNING_KEY` → `"***"`; `NORMAL` unchanged; valid JSON |
+| Undo | one `ripple.undoLastChange` → `git status` clean |
+| Compaction | fired 14 times at the 12,000-token threshold, summaries of 697-878 tokens in 3.2-27 s |
+
+Cost: 158 requests, 566 s, no quota error. Insert edits did most of the work: both `cli.py`
+edits staged on the first try; two stale line numbers were refused with the line's current text
+and fixed on the next call.
+
+Honest notes:
+
+- The model also registered the command on every app's own `app.cli` group in `app.py`, so its
+  test could use `app.test_cli_runner()`. It works but is a shortcut real Flask would not take.
+- After each compaction the agent called `retrieve_context` again and re-read the same ranges;
+  the summaries keep the plan but not file positions. That accounts for much of the 158 requests.
+- About 40% of the steps were spent debugging its own first test (`exit code 2`), which used
+  `app.test_cli_runner()` before the command was registered on `app.cli`.
+- One run, not a pass rate.
+
 ## Phase 2: independent verification (`E:\ripple-verify`, `963d790`)
 
 | Check | Result |

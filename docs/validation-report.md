@@ -52,6 +52,172 @@ Observation from run 4: `gpt-oss-120b` spent its five calls on `list_tools` thro
 with slightly different arguments and never reached `retrieve_context`. Too few calls to judge, but
 the deferred-tool flow may need a clearer prompt for this model.
 
+### Local model with a larger window (17 Nov, builder tree, uncommitted)
+
+Ollama was loading `qwen2.5-coder-tools:7b` with a 4,096-token window. A variant with
+`num_ctx 16384` (`ollama/qwen-coder-tools-7b-16k`, 5.5 GB, fully on an 8 GB GPU) was tried on Task B.
+
+| Run | Change under test | Outcome |
+|---|---|---|
+| 1 | 16K window only | No edits. Looped on `list_tools`. |
+| 2 | Same, with tool responses traced | No edits. Retrieval (8,000 tokens) plus a whole `cli.py` read overflowed the window. |
+| 3 | Retrieval capped at 30% of the window (4,915); `read_file` capped at 250 lines per call | No edits. The model paged through `cli.py` as told, then stopped. |
+| 4 | Plus one follow-up turn asking for `propose_write` | No edits. The model answered in text. |
+
+Result: 0 of 4. The three changes fix real context overflows and are kept (the mock suite and unit
+tests pass with them), but a 7B model still does not carry out Task B. A hosted model with a real
+token allowance is still needed. OpenRouter's free tier (50 requests per day) was checked but not
+used.
+
+### Shrinking what each step sends (17 Nov, builder tree, uncommitted)
+
+Every step resends the whole conversation, so anything large that enters it is paid for again
+on every later step. The adapter now logs the size of each request, so these are measured.
+
+Changes:
+
+1. **Retrieval as a map** (`ripple.retrievalStyle`, default `map`). `retrieve_context` sends the
+   receipt plus, per file, its definitions or doc sections with line ranges and the most relevant
+   line ranges; files under 500 tokens are still sent whole, pinned ranges are still sent as text,
+   and the map lists at most 6 unpinned files (the rest appear as evicted). On the flask Task B
+   request: **2,038 tokens for 6 files, against 4,655 for 5 files as excerpts**, same budget.
+2. **All tools preloaded** in `agents/ripple-agent.json` (`preload: true`). Both Groq and the local
+   model had spent 2 to 10 steps on `list_tools` / `get_tool_info` / `call_tool`; those are gone.
+   This retires deferred tools as the showcased context-engineering feature; the budgeted map with
+   its receipt takes that role.
+3. **Smaller replies:** `read_file` returns at most 120 lines per call; `run_command` output is
+   capped at 2,400 characters (start and end kept).
+4. **Instructions** tell the agent to read only the ranges from the map and to finish one file
+   (read, then `propose_write`) before the next.
+
+Measured, local `qwen-coder-tools-7b-16k`, Task B, prompt tokens per request:
+
+| Request | Before (map off, deferred tools) | After |
+|---|---|---|
+| 1 | 1,188 | 1,239 |
+| 2 | 4,276 | 4,327 |
+| 3 | 6,897 | 5,900 |
+| 4 | 9,836 | 5,966 |
+| 5 | 12,675 (TrueForge compacted the history here) | 6,203 |
+| 6 | | 7,478 |
+| 7 | | 8,765 |
+
+Behaviour changed as intended: the model read `src/flask/cli.py` lines 531-696 (`FlaskGroup`)
+straight from the map instead of paging from line 1, and for the first time called `propose_write`.
+Its edit was wrong (empty `old_text` on an existing file, rejected by the transaction layer with a
+clear message), and the run then ended on a 60-second `Headers Timeout` from the local model, then
+from the fallback model (switching Ollama models on an 8 GB GPU forces a slow reload). **Task B on
+the 7B model: still 0 passes.** Task A and cancel on the 7B model still pass after the changes
+(2 hunks, `FLASK_DEBUG=off` prints `False`, cancel in 24 ms).
+
+Other findings:
+
+- **TrueForge compacts on its own.** Near the window limit it emitted
+  `thread.context_compaction_started` / `finished` and continued with a summary. Idea "drop old
+  tool results" therefore needs no code of ours.
+- **Groq does not discount cached tokens on this tier.** The same 4,124-token prompt was charged in
+  full three times and the third call hit 429. With the changes a strong model's requests should
+  stay near 5,000 to 9,000 tokens, which is still at or over Groq's 8,000 per minute: Groq stays
+  usable for Task A only.
+- **Old test clones lose `.git/refs`.** All `ripple-b-*` clones in `%TEMP%`, including passing runs
+  from 16 Nov, later lose their empty `refs` folders and stop being git repositories. Something
+  outside Ripple removes empty folders from the temp directory. Fresh clones are fine; it does not
+  affect a run in progress, but `git status` checks must be made during the run, as the harness does.
+
+Tests: 114 of 114 unit tests (4 new for the map, 3 for paging); full mock suite passes in a VS Code
+host with all tools preloaded.
+
+### First Task B run on a strong model (17 Nov, OpenRouter free tier)
+
+Model: `openrouter/nemotron-3-ultra` = `nvidia/nemotron-3-ultra-550b-a55b:free` ($0 per request;
+the key has no credits), through the adapter. One run, 268 s, ended by OpenRouter's free daily
+limit (`free-models-per-day`, 50 requests).
+
+What the agent did on its own, no files named:
+
+- `retrieve_context`, then read ranges of `src/flask/cli.py` (including 531-696, `FlaskGroup`),
+  `src/flask/config.py`, `tests/test_cli.py` and `docs/cli.rst`.
+- Staged and got accepted 4 hunks: an import, the `config` command and its registration in
+  `FlaskGroup` in `src/flask/cli.py`, and a test in `tests/test_cli.py`.
+- Three `old_text` misses on `cli.py` before getting one right; it worked around them with
+  `run_command` (two failed because it used Unix commands on Windows).
+- The `docs/cli.rst` edit never arrived: the model sent `edits` as a JSON-encoded string, the
+  schema rejected it without a message the model could use, and it repeated the identical call 16
+  times until the daily limit was reached.
+- The run ended in error; the hunks already written for `run_command` were rolled back and the
+  clone's `git status` was clean.
+
+Requests: 52; prompt size grew from 1,687 to 37,149 tokens (OpenRouter's count). The 16 repeated
+calls account for about a third.
+
+Fixes made after the run:
+
+- `propose_write` accepts `edits` as a JSON-encoded string as well as a list, and returns a usable
+  message when it is neither.
+- An `old_text` that matches the file except for indentation or trailing spaces is accepted when the
+  match is unique and the indentation is off by one consistent amount; `new_text` is shifted by the
+  same amount. Otherwise the error now says on which line the first line of `old_text` occurs and
+  which range to re-read.
+
+Tests: 123 of 123 unit tests (9 new); full mock suite passes.
+
+Implication: on the free tier a Task B run needs most of a day's 50 requests, so about one run per
+day. That is not enough for 5 runs, or the Thursday 8 of 10, before Friday. A provider with a
+larger allowance (Mistral free tier, or OpenRouter after a one-off $10 of credits, which raises
+the free-model limit to 1,000 requests a day) is needed for the full count.
+
+### Gemini models on the existing free key (17 Nov, evening)
+
+Mistral's free tier is no longer offered. The AI Studio key has a separate free daily quota per
+model; only `gemini-3-flash-preview` was used up. One tool-call probe each: `gemini-3.5-flash`,
+`gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` answered with correct tool calls and thought
+signatures; `gemini-2.5-*` are closed to new users; `gemini-3.7-flash` and `gemini-3.8-flash`, and
+from 19:00 also `gemini-3.5-flash`, returned 503 "high demand".
+
+- `gemini-3.5-flash`, Task B: 503, then no response headers within 60 s; Ripple retried once,
+  then switched to the local fallback, which wrote nothing; the run reported that honestly.
+- `gemini-3.1-flash-lite`, Task B: found `cli.py`, read `routes_command` and `FlaskGroup` from the
+  map, and got 7 hunks accepted in `cli.py` (one `old_text` miss, fixed by the new line hint). Then
+  it ran `pip install -e .` through `run_command`, which the harness approved because it approved
+  every command, ran `pytest` without `PYTHONPATH`, and resent one identical, already-applied
+  `tests/test_cli.py` edit for over 90 requests. Stopped by hand; the session was cancelled.
+
+**Side effect on this machine:** that `pip install -e .` ran with the `pip` on PATH, Python 3.10.
+Python 3.10's Flask is now an editable install of the temporary clone
+`%TEMP%\ripple-b-1-x4UDIq\flask` (changed 17 Nov 18:57). Python 3.12, which the tests use, was not
+touched. Repaired the same evening: the editable install was uninstalled and Flask 3.1.3 installed
+from PyPI; `import flask` in Python 3.10 now loads from its `site-packages`.
+
+Fixes:
+
+- The harness and the mock suite now use `approveCommands: 'tests-only'`: only a plain
+  `pytest ...` or `<python> -m pytest ...`, optionally after one `PYTHONPATH` assignment, is
+  approved; anything chained, piped, redirected, or any install is denied with a reason.
+- A repeated identical edit now gets a reply that says, from the second repeat, that it is done and
+  must not be proposed again.
+- The adapter retries 503, 500 and per-minute 429 for up to 40 s (not daily quotas).
+
+Tests: 139 of 139 unit tests (16 new); full mock suite passes with test-only approval.
+
+### Compaction as the TrueForge context-engineering feature (17 Nov, night)
+
+The brief's top B4 anchor names TrueForge's own features (subagents, deferred tool loading, Code
+Mode, compaction, skills). Deferred tool loading was switched off earlier (models looped on
+`list_tools`), and the retrieval map counts under B1, not B4. Compaction now fills that role:
+
+- `agents/ripple-agent.json`: `context_management.compaction` enabled with an `input_tokens`
+  trigger at 12,000. TrueForge's default is 80% of the model's window, which for a 1M-token model
+  never fires; at 12,000 a Task B run (which reached 37,000 tokens on OpenRouter) is compacted
+  about every ten steps, which also keeps each request small for free-tier limits.
+- Ripple handles `thread.context_compaction_started` / `finished`: logged with the context size,
+  threshold, duration and summary size, and shown in the agent panel's status line.
+- Verified on the local 16K model with a test-only threshold of 2,500
+  (`RIPPLE_TEST_COMPACTION_TOKENS` in the Task B harness): `contextTokens=3376 threshold=2500`,
+  compacted in 16,633 ms to a 706-token summary, then compacted again later in the run. Not yet
+  seen at the real 12,000 threshold (no hosted model was available; Gemini Flash was overloaded).
+
+Tests: 139 of 139 unit tests; the agent-spec test now checks the compaction setting.
+
 ## Phase 2: independent verification (`E:\ripple-verify`, `963d790`)
 
 | Check | Result |

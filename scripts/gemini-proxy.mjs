@@ -13,6 +13,13 @@ import * as http from 'node:http';
 
 const TARGET_BASE = 'https://generativelanguage.googleapis.com/v1beta/openai';
 const GROQ_BASE = 'https://api.groq.com/openai/v1';
+const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
+const ROUTES = {
+  groq: GROQ_BASE,
+  openrouter: OPENROUTER_BASE,
+  ollama: 'http://127.0.0.1:11434/v1',
+  mistral: 'https://api.mistral.ai/v1',
+};
 const PORT = Number(process.env.GEMINI_PROXY_PORT ?? 8794);
 const VERBOSE = process.env.GEMINI_PROXY_QUIET !== '1';
 const MAX_SIGNATURES = 5000;
@@ -25,6 +32,15 @@ function remember(key, extra) {
   signatures.delete(key);
   signatures.set(key, extra);
   if (signatures.size > MAX_SIGNATURES) signatures.delete(signatures.keys().next().value);
+}
+
+/** Rough size of a request (characters / 4), split so the log shows what dominates. */
+function sizeOf(body) {
+  if (!body) return 0;
+  const tok = (v) => Math.ceil(JSON.stringify(v ?? '').length / 4);
+  const msgs = Array.isArray(body.messages) ? body.messages : [];
+  const toolResults = tok(msgs.filter((m) => m.role === 'tool'));
+  return `${tok(msgs) + tok(body.tools)} (tools=${tok(body.tools)} system=${tok(msgs.filter((m) => m.role === 'system'))} toolResults=${toolResults} n=${msgs.length})`;
 }
 
 function contentKey(name, args) {
@@ -75,7 +91,10 @@ export function stripReasoning(body) {
 export function createStreamCollector() {
   const calls = new Map(); // `${choice}:${index}` -> { id, name, args, extra }
   let pending = '';
+  let usage;
   const onEvent = (json) => {
+    if (json.usage) usage = json.usage;
+    if (json.x_groq?.usage) usage = json.x_groq.usage;
     for (const choice of json.choices ?? []) {
       const toolCalls = choice.delta?.tool_calls ?? choice.message?.tool_calls;
       if (!Array.isArray(toolCalls)) continue;
@@ -110,6 +129,8 @@ export function createStreamCollector() {
         }
       }
     },
+    /** Token usage the provider reported in the stream, if any. */
+    usage: () => usage,
     /** Stores what was collected. Returns the number of signatures captured. */
     finish() {
       let captured = 0;
@@ -175,26 +196,51 @@ export function startGeminiProxy(port = PORT) {
         bodyObj = null;
       }
       // Route: /groq/v1/... goes to Groq, everything else to Google AI Studio.
-      const isGroq = (req.url ?? '').startsWith('/groq/');
+      // and /openrouter/v1/... to OpenRouter.
+      // /ollama/v1/... goes to the local Ollama, only so its requests are measured the same way.
+      const route = /^\/(groq|openrouter|ollama|mistral)\//.exec(req.url ?? '')?.[1];
       let attached = 0;
       let missing = 0;
-      if (isGroq) attached = stripReasoning(bodyObj);
+      if (route) attached = stripReasoning(bodyObj);
       else [attached, missing] = attachSignatures(bodyObj);
+      // Ask streamed responses to report token usage, so the log can show it.
+      // Mistral rejects unknown request fields and reports usage in streams by itself.
+      if (route === 'mistral') {
+        if (bodyObj) delete bodyObj.stream_options;
+      } else if (bodyObj?.stream && !bodyObj.stream_options) {
+        bodyObj.stream_options = { include_usage: true };
+      }
 
-      // TrueForge calls <baseUrl>/chat/completions with baseUrl ending in /v1; neither upstream base has it.
-      const upstreamPath = (req.url ?? '/').replace(/^\/groq(?=\/)/, '').replace(/^\/v1(?=\/|$)/, '');
-      const targetBase = isGroq ? GROQ_BASE : TARGET_BASE;
+      // TrueForge calls <baseUrl>/chat/completions with baseUrl ending in /v1; no upstream base has it twice.
+      const upstreamPath = (req.url ?? '/').replace(/^\/(groq|openrouter|ollama|mistral)(?=\/)/, '').replace(/^\/v1(?=\/|$)/, '');
+      const targetBase = route ? ROUTES[route] : TARGET_BASE;
       const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
 
       try {
-        const upstream = await fetch(`${targetBase}${upstreamPath}`, {
-          method: req.method,
-          headers: forwardHeaders(Object.entries(req.headers)),
-          body: hasBody ? (bodyObj ? JSON.stringify(bodyObj) : rawBody) : undefined,
-        });
+        const send = () =>
+          fetch(`${targetBase}${upstreamPath}`, {
+            method: req.method,
+            headers: forwardHeaders(Object.entries(req.headers)),
+            body: hasBody ? (bodyObj ? JSON.stringify(bodyObj) : rawBody) : undefined,
+          });
+        // Ride out short overloads (503, 500, per-minute 429) here. TrueForge gives up after
+        // 60 s without response headers, so the waiting stops well before that. A daily quota
+        // is not retried: waiting cannot fix it.
+        const started = Date.now();
+        let upstream = await send();
+        for (const wait of [2000, 4000, 8000, 12000]) {
+          if (![429, 500, 503].includes(upstream.status)) break;
+          const peek = await upstream.clone().text();
+          if (upstream.status === 429 && /per.?day|PerDay|daily/i.test(peek)) break;
+          if (Date.now() - started + wait > 40000) break;
+          if (VERBOSE) console.log(`[gemini-proxy] ${route ?? 'gemini'} ${upstream.status}; retrying in ${wait / 1000}s`);
+          await new Promise((r) => setTimeout(r, wait));
+          upstream = await send();
+        }
         const responseHeaders = forwardHeaders(upstream.headers.entries());
         const isStream = (upstream.headers.get('content-type') ?? '').includes('text/event-stream');
         let captured = 0;
+        let usage;
 
         if (isStream && upstream.body) {
           res.writeHead(upstream.status, responseHeaders);
@@ -206,11 +252,14 @@ export function startGeminiProxy(port = PORT) {
           }
           collector.push('\n');
           captured = collector.finish();
+          usage = collector.usage();
           res.end();
         } else {
           const text = await upstream.text();
           try {
-            captured = captureFromJson(JSON.parse(text));
+            const json = JSON.parse(text);
+            captured = captureFromJson(json);
+            usage = json.usage;
           } catch {
             // not JSON; forward as-is
           }
@@ -223,9 +272,13 @@ export function startGeminiProxy(port = PORT) {
 
         if (VERBOSE) {
           console.log(
-            `[gemini-proxy] ${isGroq ? 'groq' : 'gemini'} ${req.method} ${upstreamPath} -> ${upstream.status}` +
+            `[gemini-proxy] ${route ?? 'gemini'} ${req.method} ${upstreamPath} -> ${upstream.status}` +
               ` stream=${isStream} messages=${bodyObj?.messages?.length ?? 0}` +
-              ` attached=${attached} missing=${missing} captured=${captured}`,
+              ` attached=${attached} missing=${missing} captured=${captured}` +
+              ` sentTokens~${sizeOf(bodyObj)}` +
+              (usage
+                ? ` prompt=${usage.prompt_tokens} cached=${usage.prompt_tokens_details?.cached_tokens ?? 0} completion=${usage.completion_tokens}`
+                : ''),
           );
         }
       } catch (err) {

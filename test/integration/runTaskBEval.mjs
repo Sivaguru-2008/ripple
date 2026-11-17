@@ -22,6 +22,12 @@ async function runSingle(runIndex) {
   const tmp = mkdtempSync(path.join(realpathSync.native(tmpdir()), `ripple-b-${runIndex}-`));
   const agent = JSON.parse(readFileSync(path.join(root, 'agents', 'ripple-agent.json'), 'utf-8'));
   agent.model = { ...agent.model, name: model };
+  // Test-only: a lower compaction threshold, to see TrueForge compact on a short run.
+  const compactAt = Number(process.env.RIPPLE_TEST_COMPACTION_TOKENS ?? 0);
+  if (compactAt > 0) {
+    agent.config.context_management.compaction = { enabled: true, trigger: { type: 'input_tokens', value: compactAt } };
+    console.log(`Compaction threshold for this run: ${compactAt} input tokens`);
+  }
   const agentPath = path.join(tmp, 'ripple-agent.json');
   writeFileSync(agentPath, JSON.stringify(agent, null, 2));
 

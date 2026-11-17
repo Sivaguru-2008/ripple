@@ -50,13 +50,13 @@ export async function run(): Promise<void> {
   const result = await vscode.commands.executeCommand<RunResult>('ripple.agentRun', {
     instruction: TASK_B,
     agentPath: process.env['RIPPLE_TEST_AGENT'],
-    approveCommands: 'allow',
+    approveCommands: 'tests-only',
   });
   const durationMs = Date.now() - startTime;
   sub.dispose();
 
   // What the run did: tool calls, model errors, retries and any fallback switch.
-  const trace = api.logs.filter((l) => /\[run\]|\[fallback\]|\[command\]|Model Error|turn\.done|toolCalls=|\[review\]/.test(l));
+  const trace = api.logs.filter((l) => /\[run\]|\[fallback\]|\[command\]|Model Error|turn\.done|model\.message\.delta|\[review\]|tool\.response|\[mcp\]|budget|compact|summar/i.test(l));
   console.log(`--- run trace (${trace.length} lines) ---\n${trace.map((l) => l.slice(0, 400)).join('\n')}\n--- end trace ---`);
   console.log(`Finished on model: ${result?.model}; hunks written: ${result?.hunksWritten}; fallback: ${result?.fallback ? `${result.fallback.from} -> ${result.fallback.to}` : 'none'}`);
   // A pass must come from the model under test, not from the fallback.

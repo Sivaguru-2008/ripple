@@ -219,7 +219,7 @@ export async function run(): Promise<void> {
     const result = await vscode.commands.executeCommand<RunResult>('ripple.agentRun', {
       instruction: `${TASK_B} Start from @FlaskGroup and look at @config.py.`,
       agentPath: process.env['RIPPLE_TEST_AGENT'],
-      approveCommands: 'allow',
+      approveCommands: 'tests-only',
     });
     sub.dispose();
     console.log(`cancelled agent run: ${result?.status}; reviews opened for ${reviews.map((p) => p.path).join(', ')}`);
@@ -253,7 +253,7 @@ export async function run(): Promise<void> {
     const result = await vscode.commands.executeCommand<RunResult>('ripple.agentRun', {
       instruction: TASK_B_PROMPT,
       agentPath: process.env['RIPPLE_TEST_AGENT'],
-      approveCommands: 'allow',
+      approveCommands: 'tests-only',
     });
     console.log(api.logs.filter((l) => /\[command\]|\[approval\]|call_tool|committed|tool\.approval_required/.test(l)).slice(-12).join('\n'));
     sub.dispose();
@@ -281,11 +281,12 @@ export async function run(): Promise<void> {
     }
     assert.ok(receipt.usedTokens <= receipt.budgetTokens, 'receipt exceeds its budget');
 
-    // The agent's own verification: run_command, deferred (reached through call_tool) and approval-gated.
+    // The agent's own verification: run_command, approval-gated.
     assert.ok(api.logs.some((l) => /\[approval\] run_command .*pytest/.test(l)), 'run_command was not approval-gated');
     assert.ok(api.logs.some((l) => /\[command\] .*wrote \d+ accepted hunk\(s\) in 3 file\(s\) before the command/.test(l)), 'accepted hunks were not written as one edit before the command');
     assert.ok(api.logs.some((l) => /\[command\] .*pytest.* → ok/.test(l)), 'the pytest run started by the agent did not pass');
-    if (mock) assert.ok(api.logs.some((l) => /toolCalls=\[call_tool\(/.test(l)), 'run_command was not called as a deferred tool');
+    // All tools are preloaded: discovery steps (list_tools, call_tool) cost a full resend each.
+    if (mock) assert.ok(api.logs.some((l) => /toolCalls=\[\S*run_command\(/.test(l)), 'run_command was not called directly');
 
     // Verify all hunks were applied
     for (const p of reviews) {

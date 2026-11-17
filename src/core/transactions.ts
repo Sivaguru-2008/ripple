@@ -60,6 +60,8 @@ export interface Hunk {
 export type ProposalState = 'reviewing' | 'decided' | 'held' | 'applied' | 'rejected' | 'failed' | 'discarded';
 
 export interface Proposal {
+  /** How many times the identical edit was proposed again after this one. */
+  repeats?: number;
   readonly id: string;
   readonly runId: string;
   readonly tool: string;
@@ -458,7 +460,13 @@ export class TransactionManager {
     const p = staged.proposal;
     if (staged.kind === 'duplicate' && (p.executed || p.state === 'reviewing')) {
       const what = p.state === 'reviewing' ? 'already staged, awaiting review' : `already ${p.state}`;
-      return { isError: false, text: `${what}: this exact edit to ${p.path} was proposed before in this run (proposal ${p.id}). Nothing new was staged.\n${this.report(p)}` };
+      p.repeats = (p.repeats ?? 0) + 1;
+      // Seen: a model resending the same edit dozens of times. Say plainly that it is done.
+      const stop =
+        p.repeats >= 2
+          ? `\nThis is repeat ${p.repeats} of the same edit. It is done; do not propose it again. Move on to the next file, or finish and summarise.`
+          : '';
+      return { isError: false, text: `${what}: this exact edit to ${p.path} was proposed before in this run (proposal ${p.id}). Nothing new was staged.${stop}\n${this.report(p)}` };
     }
     if (p.state === 'reviewing') await this.awaitReview(p);
     this.closeUndecided(p);
@@ -727,6 +735,60 @@ export function replacementsBetween(from: string, to: string): TextReplacement[]
   return applyReplacements(from, out) === to ? out : [{ start: 0, end: from.length, text: to }];
 }
 
+const leading = (line: string): number => (/^[ \t]*/.exec(line)?.[0] ?? '').replace(/\t/g, '    ').length;
+
+/**
+ * Finds old_text in `base` ignoring indentation and trailing spaces. When it matches exactly once
+ * and every non-blank line is off by the same indentation, returns the file's real text and
+ * new_text shifted by that amount.
+ */
+function looseMatch(
+  base: string,
+  eol: string,
+  oldText: string,
+  newText: string,
+): { kind: 'unique'; oldText: string; newText: string } | { kind: 'none' | 'ambiguous' } {
+  const baseLines = base.split(eol);
+  const oldLines = oldText.split(eol);
+  while (oldLines.length > 1 && oldLines.at(-1)?.trim() === '') oldLines.pop();
+  while (oldLines.length > 1 && oldLines[0]?.trim() === '') oldLines.shift();
+  if (oldLines.every((l) => l.trim() === '')) return { kind: 'none' };
+  const starts: number[] = [];
+  for (let i = 0; i + oldLines.length <= baseLines.length; i++) {
+    if (oldLines.every((l, k) => l.trim() === (baseLines[i + k] ?? '').trim())) starts.push(i);
+  }
+  if (starts.length === 0) return { kind: 'none' };
+  if (starts.length > 1) return { kind: 'ambiguous' };
+  const at = starts[0]!;
+  const deltas = new Set<number>();
+  oldLines.forEach((l, k) => {
+    if (l.trim()) deltas.add(leading(baseLines[at + k] ?? '') - leading(l));
+  });
+  if (deltas.size !== 1) return { kind: 'none' };
+  const delta = [...deltas][0]!;
+  const shifted = newText
+    .split(eol)
+    .map((l) => {
+      if (!l.trim() || delta === 0) return l;
+      if (delta > 0) return ' '.repeat(delta) + l;
+      return leading(l) >= -delta ? l.replace(/^[ \t]*/, (ws) => ' '.repeat(ws.replace(/\t/g, '    ').length + delta)) : l;
+    })
+    .join(eol);
+  // Keep the span to whole lines of the file, ending where old_text ended.
+  const realOld = baseLines.slice(at, at + oldLines.length).join(eol);
+  return { kind: 'unique', oldText: realOld, newText: oldText.endsWith(eol) && !shifted.endsWith(eol) ? shifted + eol : shifted };
+}
+
+/** The file's own lines closest to old_text's first line, so the agent can copy them. */
+function nearestHint(base: string, oldText: string): string {
+  const first = oldText.split(/\r?\n/).find((l) => l.trim())?.trim();
+  if (!first || first.length < 8) return '';
+  const lines = base.split(/\r?\n/);
+  const k = lines.findIndex((l) => l.trim() === first);
+  if (k < 0) return '';
+  return ` Its first line occurs at line ${k + 1}; read_file lines ${k + 1}-${Math.min(lines.length, k + oldText.split(/\r?\n/).length + 2)} and copy them exactly.`;
+}
+
 /**
  * Applies old_text → new_text replacements to `base`. Each old_text must occur exactly
  * once (after removing a copied read_file gutter); edits must not overlap.
@@ -762,11 +824,22 @@ export function applyTextEdits(
     }
     const strippedNew = stripLineGutter(newText);
     if (strippedNew.stripped) newText = strippedNew.text;
-    newText = stripTrailingWhitespace(newText, oldText, false);
 
     if (occurrences === 0) {
-      return { ok: false, error: `Edit ${n}: old_text was not found in the file. Copy it exactly from read_file, without line numbers.` };
+      // Same lines with different indentation or trailing spaces: take the file's own text,
+      // and shift new_text by the same indentation, but only when that shift is unambiguous.
+      const loose = looseMatch(base, eol, oldText, newText);
+      if (loose.kind === 'unique') {
+        oldText = loose.oldText;
+        newText = loose.newText;
+        occurrences = 1;
+      } else {
+        const hint = loose.kind === 'ambiguous' ? ' Lines like these occur more than once; include more surrounding lines.' : nearestHint(base, oldText);
+        return { ok: false, error: `Edit ${n}: old_text was not found in the file. Copy it exactly from read_file, without line numbers.${hint}` };
+      }
     }
+    newText = stripTrailingWhitespace(newText, oldText, false);
+
     if (occurrences > 1) {
       return { ok: false, error: `Edit ${n}: old_text occurs ${occurrences} times; include more surrounding lines so it matches exactly once.` };
     }

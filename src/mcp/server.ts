@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { generateToken, isAuthorized } from '../core/auth';
-import { withLineNumbers } from '../core/paths';
+import { readWindow } from '../core/paths';
 
 /** Editor capabilities the tools need. Injected so this module has no `vscode` import. */
 export interface ToolHost {
@@ -38,6 +38,25 @@ function text(t: string, isError = false): { content: { type: 'text'; text: stri
   return { content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) };
 }
 
+const EDIT = z.object({
+  old_text: z.string().describe('Exact existing text to replace. Must occur exactly once. Empty only when creating a new file.'),
+  new_text: z.string().describe('Replacement text.'),
+});
+
+/** propose_write edits as a list, or a message saying what is wrong with them. */
+export function decodeEdits(edits: unknown): { old_text: string; new_text: string }[] | string {
+  let value = edits;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return 'edits must be a list of {old_text, new_text} objects, not text; pass the list itself.';
+    }
+  }
+  const parsed = z.array(EDIT).min(1).safeParse(value);
+  return parsed.success ? parsed.data : 'edits must be a non-empty list of {old_text, new_text} objects with string values.';
+}
+
 function oneLine(t: string): string {
   return t.replace(/\s*\n\s*/g, ' | ');
 }
@@ -50,7 +69,8 @@ function buildServer(host: ToolHost, runToken: string): McpServer {
     {
       description:
         'Read a text file in the workspace. Returns the content with 1-based line numbers ' +
-        '(the numbers are not part of the file). Optionally limit to lines start..end (inclusive).',
+        '(the numbers are not part of the file). Optionally limit to lines start..end (inclusive). ' +
+        'Returns at most 120 lines per call: pass the start and end of the range you need.',
       inputSchema: {
         path: z.string().describe('Workspace-relative path, e.g. "src/app.ts".'),
         start: z.number().int().min(1).optional(),
@@ -63,7 +83,7 @@ function buildServer(host: ToolHost, runToken: string): McpServer {
       try {
         host.checkRun(runToken);
         const content = await host.readText(path, runToken);
-        return text(withLineNumbers(content, start, end));
+        return text(readWindow(content, start, end));
       } catch (err) {
         return text(`read_file failed: ${err instanceof Error ? err.message : String(err)}`, true);
       }
@@ -157,19 +177,20 @@ function buildServer(host: ToolHost, runToken: string): McpServer {
         'hunk whether it was applied or rejected by the user; do not claim more than it says.',
       inputSchema: {
         path: z.string().describe('Workspace-relative path.'),
-        edits: z
-          .array(
-            z.object({
-              old_text: z.string().describe('Exact existing text to replace. Must occur exactly once. Empty only when creating a new file.'),
-              new_text: z.string().describe('Replacement text.'),
-            }),
-          )
-          .min(1),
+        // Some models send the list JSON-encoded as a string. Rejecting that at the schema
+        // gives them nothing to act on, and one was seen retrying it 16 times, so it is decoded here.
+        edits: z.union([z.array(EDIT).min(1), z.string().describe('The same list, JSON-encoded.')]),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => {
-      host.log(`[mcp] propose_write path=${args.path} edits=${args.edits.length}`);
+    async (raw) => {
+      const decoded = decodeEdits(raw.edits);
+      if (typeof decoded === 'string') {
+        host.log(`[mcp] propose_write path=${raw.path} rejected: ${decoded}`);
+        return text(`${decoded} Nothing was staged for ${raw.path}.`, true);
+      }
+      const args = { path: raw.path, edits: decoded };
+      host.log(`[mcp] propose_write path=${args.path} edits=${args.edits.length}${typeof raw.edits === 'string' ? ' (decoded from a string)' : ''}`);
       const out = await host.execute(runToken, 'propose_write', args);
       host.log(`[mcp] propose_write → ${oneLine(out.text)}`);
       return text(out.text, out.isError);

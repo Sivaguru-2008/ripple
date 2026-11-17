@@ -11,8 +11,22 @@ export interface CommandResult {
   isError: boolean;
 }
 
-export const MAX_COMMAND_OUTPUT_CHARS = 4000;
+// About 600 tokens. Every later step resends it, and a test run's verdict is at the end.
+export const MAX_COMMAND_OUTPUT_CHARS = 2400;
 export const DEFAULT_TIMEOUT_MS = 60_000;
+
+/**
+ * True for a plain test-runner invocation: `pytest ...` or `<python> -m pytest ...`, optionally
+ * after one environment assignment (`set "PYTHONPATH=src" &&` or `PYTHONPATH=src`). Anything
+ * chained, piped or redirected is not. Used to auto-approve test runs only, never installs.
+ */
+export function isTestCommand(command: string): boolean {
+  let rest = command.trim();
+  rest = rest.replace(/^set\s+"?[A-Za-z_][A-Za-z0-9_]*=[^"&|<>]*"?\s*&&\s*/i, '');
+  rest = rest.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, '');
+  if (/[&|;<>`$\n]/.test(rest)) return false;
+  return /^(?:pytest|(?:"[^"]*python[^"\\/]*(?:\.exe)?"|\S*python\d?(?:\.\d+)?(?:\.exe)?)\s+-m\s+pytest)(?:\s|$)/i.test(rest);
+}
 
 /** Runs a command in the workspace root with timeout and output truncation. */
 export function runShellCommand(

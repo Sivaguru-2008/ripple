@@ -573,7 +573,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
             deferred: true,
             // Small models often stop after reading, or write the edit as text. One follow-up turn.
             nudge:
-              'You stopped without proposing any change, so nothing was written. If the task needs files changed, continue now: call propose_write as a real tool call (not JSON or Markdown text) for each file that must change, one file per call, with old_text copied exactly from read_file. Cover the implementation, its test and its documentation. If the task needs no change, say so in one sentence.',
+              'You stopped without proposing any change, so nothing was written. If the task needs files changed, continue now: call propose_write as a real tool call (not JSON or Markdown text) for each file that must change, one file per call. To add code, use {insert_after_line, line_text, new_text}; to change code, use {old_text, new_text} copied exactly from read_file. Cover the implementation, its test and its documentation. If the task needs no change, say so in one sentence.',
             decideOther: approveCommand,
             onFallback: (fromModel, toModel, reason) => {
               log(`[fallback] agent task switched from ${fromModel} to ${toModel} (${reason})`);

@@ -137,9 +137,14 @@ export interface AppliedChange {
 
 export class StaleRunError extends Error {}
 
+/** Replace old_text, or insert new lines after a line given by number and its current text. */
+export type ProposeEdit =
+  | { old_text: string; new_text: string }
+  | { insert_after_line: number; line_text?: string; new_text: string };
+
 export interface ProposeWriteArgs {
   path: string;
-  edits: { old_text: string; new_text: string }[];
+  edits: ProposeEdit[];
 }
 
 export interface ReplaceSelectionArgs {
@@ -701,7 +706,7 @@ export class TransactionManager {
             : `${path} does not exist. To create it, call propose_write with exactly one edit whose old_text is "" and whose new_text is the whole file. Nothing was staged.`,
         };
       }
-      const result = applyTextEdits(baseText, edits as ProposeWriteArgs['edits']);
+      const result = applyTextEdits(baseText, edits as Record<string, unknown>[]);
       if (!result.ok) return { ok: false, error: `${result.error} Nothing was staged for ${path}.` };
       return { ok: true, path, baseText, newText: result.text };
     }
@@ -790,23 +795,67 @@ function nearestHint(base: string, oldText: string): string {
 }
 
 /**
- * Applies old_text → new_text replacements to `base`. Each old_text must occur exactly
- * once (after removing a copied read_file gutter); edits must not overlap.
+ * Where new lines go for an insert edit: the character offset just after line `after`
+ * (1-based; 0 = top of file), checked against the line's current text so a stale line number
+ * fails cleanly instead of inserting in the wrong place.
+ */
+function insertPosition(
+  base: string,
+  eol: string,
+  after: unknown,
+  lineText: unknown,
+): { ok: true; at: number; needsEolBefore: boolean } | { ok: false; error: string } {
+  const lines = base.split(eol);
+  const count = base.endsWith(eol) ? lines.length - 1 : lines.length;
+  if (typeof after !== 'number' || !Number.isInteger(after) || after < 0 || after > count) {
+    return { ok: false, error: `insert_after_line must be a whole number from 0 to ${count} (the file has ${count} lines).` };
+  }
+  if (after > 0) {
+    const actual = lines[after - 1] ?? '';
+    if (typeof lineText !== 'string' || lineText.trim() === '') {
+      return { ok: false, error: `give line_text, the current text of line ${after}, which is: ${JSON.stringify(actual.trim())}.` };
+    }
+    const given = stripLineGutter(lineText).text.trim();
+    if (given !== actual.trim()) {
+      return { ok: false, error: `line ${after} is now ${JSON.stringify(actual.trim())}, not ${JSON.stringify(given)}; the file may have changed, so read it again.` };
+    }
+  }
+  let at = 0;
+  for (let k = 0; k < after; k++) at += (lines[k] ?? '').length + eol.length;
+  const needsEolBefore = after === count && after > 0 && !base.endsWith(eol);
+  return { ok: true, at: Math.min(at, base.length), needsEolBefore };
+}
+
+/**
+ * Applies edits to `base`. A replace edit's old_text must occur exactly once (after removing a
+ * copied read_file gutter); an insert edit adds lines after a numbered line. Edits must not overlap.
  */
 export function applyTextEdits(
   base: string,
-  edits: { old_text: unknown; new_text: unknown }[],
+  edits: Record<string, unknown>[],
 ): { ok: true; text: string } | { ok: false; error: string } {
   const eol = detectEol(base);
   const found: { start: number; end: number; text: string }[] = [];
   for (const [k, edit] of edits.entries()) {
     const n = k + 1;
-    if (typeof edit?.old_text !== 'string' || typeof edit?.new_text !== 'string') {
-      return { ok: false, error: `Edit ${n}: old_text and new_text must both be strings.` };
-    }
     const toEol = (s: string): string => s.replace(/\r\n/g, '\n').replace(/\n/g, eol);
-    let oldText = toEol(edit.old_text);
-    let newText = toEol(edit.new_text);
+    if (edit && edit['insert_after_line'] !== undefined && edit['old_text'] === undefined) {
+      if (typeof edit['new_text'] !== 'string' || edit['new_text'] === '') {
+        return { ok: false, error: `Edit ${n}: new_text must be the non-empty text to insert.` };
+      }
+      const pos = insertPosition(base, eol, edit['insert_after_line'], edit['line_text']);
+      if (!pos.ok) return { ok: false, error: `Edit ${n}: ${pos.error}` };
+      let text = stripLineGutter(toEol(edit['new_text'])).text;
+      if (!text.endsWith(eol)) text += eol;
+      if (pos.needsEolBefore) text = eol + text.slice(0, -eol.length);
+      found.push({ start: pos.at, end: pos.at, text });
+      continue;
+    }
+    if (typeof edit?.['old_text'] !== 'string' || typeof edit?.['new_text'] !== 'string') {
+      return { ok: false, error: `Edit ${n}: give either old_text and new_text, or insert_after_line, line_text and new_text.` };
+    }
+    let oldText = toEol(edit['old_text']);
+    let newText = toEol(edit['new_text']);
     if (oldText === '') return { ok: false, error: `Edit ${n}: old_text is empty; give the exact existing text to replace.` };
 
     const count = (needle: string): number => {

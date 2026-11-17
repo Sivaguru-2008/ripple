@@ -38,23 +38,36 @@ function text(t: string, isError = false): { content: { type: 'text'; text: stri
   return { content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) };
 }
 
-const EDIT = z.object({
+const REPLACE_EDIT = z.object({
   old_text: z.string().describe('Exact existing text to replace. Must occur exactly once. Empty only when creating a new file.'),
   new_text: z.string().describe('Replacement text.'),
 });
 
+// Adding code needs no copied text: most failed edits in real runs were old_text copy errors.
+const INSERT_EDIT = z.object({
+  insert_after_line: z.number().int().min(0).describe('Insert after this line number, as shown by read_file. 0 = top of file.'),
+  line_text: z.string().optional().describe('The current text of that line, copied from read_file; checked so a stale line number fails. Not needed for 0.'),
+  new_text: z.string().describe('The lines to insert.'),
+});
+
+const EDIT = z.union([REPLACE_EDIT, INSERT_EDIT]);
+
+type Edit = z.infer<typeof EDIT>;
+
 /** propose_write edits as a list, or a message saying what is wrong with them. */
-export function decodeEdits(edits: unknown): { old_text: string; new_text: string }[] | string {
+export function decodeEdits(edits: unknown): Edit[] | string {
   let value = edits;
   if (typeof value === 'string') {
     try {
       value = JSON.parse(value);
     } catch {
-      return 'edits must be a list of {old_text, new_text} objects, not text; pass the list itself.';
+      return 'edits must be a list of edit objects, not text; pass the list itself.';
     }
   }
   const parsed = z.array(EDIT).min(1).safeParse(value);
-  return parsed.success ? parsed.data : 'edits must be a non-empty list of {old_text, new_text} objects with string values.';
+  return parsed.success
+    ? parsed.data
+    : 'edits must be a non-empty list of {old_text, new_text} or {insert_after_line, line_text, new_text} objects.';
 }
 
 function oneLine(t: string): string {
@@ -172,8 +185,10 @@ function buildServer(host: ToolHost, runToken: string): McpServer {
         'Propose edits to one workspace file, or create a new one. To create a file that does not exist, ' +
         'pass exactly one edit with old_text "" and new_text = the whole file. ' +
         'The user reviews every change hunk by hunk; only ' +
-        'accepted hunks are written. Each edit replaces old_text (copied exactly from the file, ' +
-        'without line numbers, occurring exactly once) with new_text. The result states for each ' +
+        'accepted hunks are written. An edit either replaces old_text (copied exactly from the file, ' +
+        'without line numbers, occurring exactly once) with new_text, or, to add new code, inserts ' +
+        'new_text after line insert_after_line, whose current text you give as line_text. Several ' +
+        'edits to one file go in one call, with line numbers from the same read. The result states for each ' +
         'hunk whether it was applied or rejected by the user; do not claim more than it says.',
       inputSchema: {
         path: z.string().describe('Workspace-relative path.'),

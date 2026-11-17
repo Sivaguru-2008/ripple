@@ -13,6 +13,18 @@ const flaskRepo = process.env.RIPPLE_FLASK_REPO ?? path.resolve(root, '..', 'for
 const model = process.env.RIPPLE_TEST_MODEL ?? 'gemini/gemini-3-flash-preview';
 const totalRuns = Number(process.env.RIPPLE_RUNS ?? 5);
 
+/** PATH and PYTHONPATH for the agent's commands, from RIPPLE_TEST_PYTHON. */
+function testPythonEnv() {
+  const py = process.env.RIPPLE_TEST_PYTHON;
+  if (!py || !path.isAbsolute(py)) return { PYTHONPATH: 'src' };
+  const dir = path.dirname(py);
+  const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+  return {
+    PYTHONPATH: 'src',
+    [pathKey]: [dir, path.join(dir, 'Scripts'), process.env[pathKey] ?? ''].join(path.delimiter),
+  };
+}
+
 async function runSingle(runIndex) {
   console.log(`\n======================================================`);
   console.log(` Starting Task B Run ${runIndex} of ${totalRuns} on fresh clone `);
@@ -80,6 +92,10 @@ async function runSingle(runIndex) {
       ],
       extensionTestsEnv: {
         ...process.env,
+        // What a developer's activated virtualenv gives: the agent's own `pytest` / `python`
+        // resolve to the test Python and import the clone's Flask (commands run in the clone's root).
+        // Without it a real model saw an ImportError and tried `pip install -e .`.
+        ...testPythonEnv(),
         RIPPLE_TEST_AGENT: agentPath,
         RIPPLE_TEST_MODEL: model,
         RIPPLE_RUN_INDEX: String(runIndex),
@@ -132,8 +148,10 @@ async function main() {
   writeFileSync(summaryOut, JSON.stringify(reports, null, 2), 'utf-8');
   console.log(`Detailed summary saved to: ${summaryOut}`);
 
-  if (passed < 4) {
-    console.error(`CRITICAL: Required at least 4/5 runs to succeed, got ${passed}`);
+  // At least 80% of the runs, e.g. 4 of 5 or 1 of 1.
+  const required = Math.ceil(totalRuns * 0.8);
+  if (passed < required) {
+    console.error(`CRITICAL: Required at least ${required}/${totalRuns} runs to succeed, got ${passed}`);
     process.exit(1);
   }
 }

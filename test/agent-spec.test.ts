@@ -23,8 +23,13 @@ describe('agents/ripple-agent.json', () => {
       'search_workspace',
       'retrieve_context',
       'propose_write',
+      'run_command',
     ]);
-    expect(ripple?.preload).toBe(false);
+    // Every tool up front: no list_tools / call_tool steps, each of which resends the whole history.
+    expect(ripple?.preload).toBe(true);
+    // Compaction is the TrueForge context-engineering feature this agent relies on: a Task B run
+    // passes 12,000 input tokens after about ten steps, and older steps are then summarised.
+    expect(spec.config?.contextManagement?.compaction).toEqual({ enabled: true, trigger: { type: 'input_tokens', value: 12000 } });
     expect(spec.instructions).not.toMatch(/epoch/);
     expect(spec.instructions).toMatch(/retrieve_context/);
     expect(spec.instructions).toMatch(/run_command/);

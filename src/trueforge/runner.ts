@@ -2,7 +2,7 @@
 // No `vscode` imports: the extension supplies the UI callbacks.
 import type { TrueForgeApi } from '@truefoundry/trueforge-sdk';
 import type { SelectionTarget, TransactionManager } from '../core/transactions';
-import { isRetryableModelError, unwrapToolCall, type ApprovalDecision, type PendingToolCall, type ToolCallUpdate, type TrueForgeClient } from './client';
+import { isRetryableModelError, unwrapToolCall, type ApprovalDecision, type CompactionInfo, type PendingToolCall, type ToolCallUpdate, type TrueForgeClient } from './client';
 
 const WRITE_TOOLS = ['propose_write', 'replace_selection'] as const;
 
@@ -18,6 +18,8 @@ export interface RunRequest {
   decideOther(call: PendingToolCall): Promise<ApprovalDecision>;
   onDelta?(text: string, kind: 'content' | 'tool'): void;
   onToolCall?(call: ToolCallUpdate): void;
+  /** TrueForge compacted the conversation (context-engineering feature, shown to the user). */
+  onCompaction?(info: CompactionInfo): void;
   /** Called once per attempt with the run and its TrueForge session. */
   onSession?(runId: string, sessionId: string): void;
   /** Notified when primary model fails and runner falls back to secondary model. */
@@ -129,6 +131,7 @@ export class Runner {
           log,
           ...(req.onDelta ? { onDelta: req.onDelta } : {}),
           ...(req.onToolCall ? { onToolCall: req.onToolCall } : {}),
+          ...(req.onCompaction ? { onCompaction: req.onCompaction } : {}),
           isCancelled: () => current.cancelled,
           decide: async (raw) => {
             // A deferred tool arrives wrapped in call_tool; approve the tool actually meant.

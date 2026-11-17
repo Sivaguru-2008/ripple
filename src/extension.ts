@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { runShellCommand } from './core/command';
+import { isTestCommand, runShellCommand } from './core/command';
 import { describePins, parseMentions, resolveMentions } from './core/mentions';
 import type { Pin } from './core/retrieve';
 import { resolveInWorkspace } from './core/paths';
@@ -23,8 +23,11 @@ let mcp: RunningMcpServer | undefined;
 interface AgentRunOptions {
   instruction?: string;
   agentPath?: string;
-  /** Test-only: answers the run_command approval without the notification. */
-  approveCommands?: 'allow' | 'deny';
+  /**
+   * Test-only: answers the run_command approval without the notification. `tests-only` allows
+   * plain pytest runs and denies everything else (a model once ran `pip install -e .`).
+   */
+  approveCommands?: 'allow' | 'deny' | 'tests-only';
 }
 
 interface CommandOptions {
@@ -267,7 +270,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
         const finalBudget = runBudget !== undefined
           ? (budgetTokens ? Math.min(budgetTokens, runBudget) : runBudget)
           : budgetTokens;
-        const res = await retrieve(task, source, { budgetTokens: finalBudget, modelName, pins: resolved.pins, cochange });
+        const style = vscode.workspace.getConfiguration('ripple').get<'map' | 'text'>('retrievalStyle') ?? 'map';
+        const res = await retrieve(task, source, { budgetTokens: finalBudget, modelName, pins: resolved.pins, cochange, style });
         lastReceipt = res;
         panelProvider?.setReceipt(res);
         return { text: res.text, isError: false };
@@ -541,8 +545,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
             : instruction;
         const approveCommand = async (call: PendingToolCall): Promise<ApprovalDecision> => {
           if (options?.approveCommands) {
-            log(`[approval] ${call.toolName} ${call.arguments}: ${options.approveCommands} (test option)`);
-            return options.approveCommands === 'allow' ? { allow: true } : { allow: false, reason: 'denied by user' };
+            let command = '';
+            try {
+              command = String((JSON.parse(call.arguments || '{}') as { command?: unknown }).command ?? '');
+            } catch {
+              // malformed arguments: not a test command
+            }
+            const allow =
+              options.approveCommands === 'allow' || (options.approveCommands === 'tests-only' && isTestCommand(command));
+            log(`[approval] ${call.toolName} ${call.arguments}: ${allow ? 'allow' : 'deny'} (test option ${options.approveCommands})`);
+            if (allow) return { allow: true };
+            return {
+              allow: false,
+              reason:
+                options.approveCommands === 'tests-only'
+                  ? 'only test runs are approved here; run the tests with python -m pytest <path> -q and do not install or change packages'
+                  : 'denied by user',
+            };
           }
           return askApproval(call);
         };
@@ -552,6 +571,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
             fallbackSpec,
             message,
             deferred: true,
+            // Small models often stop after reading, or write the edit as text. One follow-up turn.
+            nudge:
+              'You stopped without proposing any change, so nothing was written. If the task needs files changed, continue now: call propose_write as a real tool call (not JSON or Markdown text) for each file that must change, one file per call, with old_text copied exactly from read_file. Cover the implementation, its test and its documentation. If the task needs no change, say so in one sentence.',
             decideOther: approveCommand,
             onFallback: (fromModel, toModel, reason) => {
               log(`[fallback] agent task switched from ${fromModel} to ${toModel} (${reason})`);
@@ -571,6 +593,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
             },
             onToolCall: (call) => {
               panelProvider?.recordToolCall({ id: call.id, name: call.name, args: call.args, status: call.status, ...(call.result ? { resultText: call.result } : {}) });
+            },
+            onCompaction: (info) => {
+              const text =
+                info.phase === 'started'
+                  ? `TrueForge is compacting the conversation: ~${info.contextTokens} tokens passed the ${info.thresholdTokens}-token threshold`
+                  : `TrueForge compacted the conversation in ${info.durationMs ?? '?'} ms; older steps are now a summary`;
+              log(`[compaction] ${text}`);
+              panelProvider?.setStatus('running', text);
             },
           }),
         );

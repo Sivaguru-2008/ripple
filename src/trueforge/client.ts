@@ -53,6 +53,16 @@ export interface TurnHandlers {
   onToolCall?(call: ToolCallUpdate): void;
   /** True once the user cancelled; pending answers are then not sent. */
   isCancelled?(): boolean;
+  /** TrueForge summarised older history because the context crossed its threshold. */
+  onCompaction?(info: CompactionInfo): void;
+}
+
+export interface CompactionInfo {
+  phase: 'started' | 'finished';
+  /** Estimated context size when compaction fired. */
+  contextTokens: number;
+  thresholdTokens: number;
+  durationMs?: number;
 }
 
 export interface TurnOutcome {
@@ -117,6 +127,10 @@ export function summarizeEvent(event: StreamEvent): string {
       return `mcp.initialize servers=[${event.mcpServers.map((s) => `${s.name}:${s.transportType ?? '?'}`).join(', ')}]`;
     case 'mcp.auth_required':
       return `mcp.auth_required${thread}`;
+    case 'thread.context_compaction_started':
+      return `thread.context_compaction_started${thread} contextTokens=${event.trigger.contextTokens} threshold=${event.trigger.thresholdTokens}`;
+    case 'thread.context_compaction_finished':
+      return `thread.context_compaction_finished${thread} durationMs=${event.durationMs} summaryTokens=${event.usage?.outputTokens ?? '?'}`;
     default:
       return `${event.type}${thread}`;
   }
@@ -280,6 +294,13 @@ export class TrueForgeClient {
             args: known?.args ?? '',
             status: content.startsWith('User denied') ? 'denied' : 'done',
             result: truncate(content, 300),
+          });
+        } else if (event.type === 'thread.context_compaction_started' || event.type === 'thread.context_compaction_finished') {
+          handlers.onCompaction?.({
+            phase: event.type === 'thread.context_compaction_started' ? 'started' : 'finished',
+            contextTokens: event.trigger.contextTokens,
+            thresholdTokens: event.trigger.thresholdTokens,
+            ...(event.type === 'thread.context_compaction_finished' ? { durationMs: event.durationMs } : {}),
           });
         } else if (event.type === 'turn.update' && event.state.status === 'paused') {
           paused = true;

@@ -10,7 +10,7 @@ import { runTests } from '@vscode/test-electron';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const baseUrl = process.env.RIPPLE_TRUEFORGE_URL ?? 'http://localhost:8790';
 const flaskRepo = process.env.RIPPLE_FLASK_REPO ?? path.resolve(root, '..', 'forge-refs', 'flask');
-const model = process.env.RIPPLE_TEST_MODEL ?? 'gemini/gemini-3-flash-preview';
+const model = process.env.RIPPLE_TEST_MODEL ?? 'gemini/gemini-3-1-flash-lite';
 const totalRuns = Number(process.env.RIPPLE_RUNS ?? 5);
 
 /** PATH and PYTHONPATH for the agent's commands, from RIPPLE_TEST_PYTHON. */
@@ -54,6 +54,8 @@ async function runSingle(runIndex) {
     JSON.stringify({
       'ripple.trueforgeBaseUrl': baseUrl,
       'ripple.warmUp': false,
+      // A second model with its own free quota, so one provider's overload does not end the run.
+      'ripple.fallbackModel': process.env.RIPPLE_FALLBACK_MODEL ?? 'gemini/gemini-3-5-flash-lite',
       'git.enabled': false,
     }),
   );
@@ -110,9 +112,12 @@ async function runSingle(runIndex) {
     return { runIndex, success: true };
   } catch (err) {
     console.error(`Run ${runIndex} failed with error:`, err);
+    // A run that passed every check on the fallback model writes its report before failing.
+    const partial = existsSync(outReportPath) ? JSON.parse(readFileSync(outReportPath, 'utf-8')) : {};
     return {
       runIndex,
       model,
+      ...partial,
       success: false,
       error: err instanceof Error ? err.message : String(err),
     };
@@ -133,6 +138,7 @@ async function main() {
     reports.map((r) => ({
       Run: r.runIndex,
       Model: r.model ?? model,
+      'Finished on': r.fallback ? `${r.finishedOn} (fallback)` : (r.finishedOn ?? ''),
       Status: r.success ? 'PASSED' : 'FAILED',
       Duration: r.durationMs ? `${(r.durationMs / 1000).toFixed(1)}s` : 'N/A',
       'Files Touched': r.touchedFiles ? r.touchedFiles.join(', ') : 'N/A',

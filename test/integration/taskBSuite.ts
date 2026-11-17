@@ -57,10 +57,17 @@ export async function run(): Promise<void> {
 
   // What the run did: tool calls, model errors, retries and any fallback switch.
   const trace = api.logs.filter((l) => /\[run\]|\[fallback\]|\[command\]|Model Error|turn\.done|model\.message\.delta|\[review\]|tool\.response|\[mcp\]|budget|compact|summar/i.test(l));
-  console.log(`--- run trace (${trace.length} lines) ---\n${trace.map((l) => l.slice(0, 400)).join('\n')}\n--- end trace ---`);
+  // One line per console.log: VS Code drops a single huge log message ("Output omitted").
+  // The full trace also goes to a file next to the run report.
+  if (outPath) writeFileSync(outPath.replace(/\.json$/, '') + '.trace.log', api.logs.join('\n'), 'utf-8');
+  console.log(`--- run trace (${trace.length} lines${outPath ? `; full log: ${outPath.replace(/\.json$/, '')}.trace.log` : ''}) ---`);
+  for (const l of trace) console.log(l.slice(0, 400));
+  console.log('--- end trace ---');
   console.log(`Finished on model: ${result?.model}; hunks written: ${result?.hunksWritten}; fallback: ${result?.fallback ? `${result.fallback.from} -> ${result.fallback.to}` : 'none'}`);
-  // A pass must come from the model under test, not from the fallback.
-  assert.equal(result?.fallback, undefined, `Task B ran on the fallback model: ${result?.message ?? ''}`);
+  // Every check still runs when the fallback model finished the task, so the result is known;
+  // but such a run does not count as a pass for the model under test (asserted at the end).
+  const viaFallback = result?.fallback;
+  if (viaFallback) console.log(`Note: ${viaFallback.from} failed (${viaFallback.reason.slice(0, 160)}); ${viaFallback.to} finished the task.`);
 
   console.log(`Task B completed in ${durationMs} ms with status: ${result?.status}${result?.message ? ` (${result.message})` : ''}`);
   assert.equal(result?.status, 'done', `Task B failed: ${result?.message ?? ''}`);
@@ -165,19 +172,23 @@ export async function run(): Promise<void> {
   // Save run report
   const report = {
     runIndex: Number(runIndex),
-    model: process.env['RIPPLE_TEST_MODEL'] ?? 'gemini/gemini-3-flash-preview',
+    model: process.env['RIPPLE_TEST_MODEL'] ?? 'gemini/gemini-3-1-flash-lite',
+    finishedOn: result?.model,
+    fallback: viaFallback ?? null,
     durationMs,
     status: result?.status,
     touchedFiles,
     receiptEvidence: receipt.receipt.map((r) => ({ path: r.path, reason: r.reason, tokens: r.tokens, evidence: r.evidence })),
     pytestOutput: pytestOut.trim(),
     configOutput: configOut.trim(),
-    success: true,
+    success: !viaFallback,
   };
 
   if (outPath) {
     writeFileSync(outPath, JSON.stringify(report, null, 2), 'utf-8');
   }
 
+  // All checks passed. A pass that needed the fallback model is reported, not counted.
+  assert.equal(viaFallback, undefined, `Task B passed every check, but only after falling back from ${viaFallback?.from} to ${viaFallback?.to}`);
   console.log(`\n=== RUN ${runIndex} PASSED SUCCESSFULLY ===\n`);
 }

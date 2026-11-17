@@ -8,6 +8,8 @@ export const DEFAULT_RESERVED_SYSTEM_AND_TOOLS = 1400;
 export const DEFAULT_RESERVED_HISTORY = 400;
 export const DEFAULT_RESERVED_OUTPUT = 600;
 export const MIN_RETRIEVAL_BUDGET = 600;
+/** Largest part of the context window retrieval takes when no budget is asked for. */
+export const DEFAULT_RETRIEVAL_SHARE = 0.3;
 
 export interface ModelContextConfig {
   /** Maximum context window limit in tokens (e.g. 4096, 8192, 16384, 32768, 128000). */
@@ -115,8 +117,10 @@ export function calculateRetrievalBudget(options: AdaptiveBudgetOptions = {}): A
   } else if (options.requestedBudget !== undefined && options.requestedBudget > 0) {
     effectiveBudget = Math.min(options.requestedBudget, maxAvailable);
   } else {
-    // For large models without explicit budget request, default up to 8000 tokens
-    effectiveBudget = Math.min(maxAvailable, 8000);
+    // Default: up to 8000 tokens, and never more than a share of the window. The agent keeps
+    // reading files and proposing edits after retrieval, and that history needs room too.
+    const share = Math.max(MIN_RETRIEVAL_BUDGET, Math.floor(contextWindow * DEFAULT_RETRIEVAL_SHARE));
+    effectiveBudget = Math.min(maxAvailable, 8000, share);
   }
 
   // Hard safety guarantee: retrieval budget must never exceed effective context window

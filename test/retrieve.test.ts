@@ -160,4 +160,54 @@ describe.skipIf(!flaskAt313)('retrieve on flask 3.1.3 (Task B request, no files 
     expect(r.usedTokens).toBeLessThanOrEqual(8000);
     expect(r.evicted.length).toBeGreaterThan(0);
   }, 60_000);
+
+  it('maps the same three files in well under half the tokens', async () => {
+    const cochange = await mineCochange(flask);
+    const text = await retrieve(TASK_B, diskSource(flask), { cochange, budgetTokens: 4915 });
+    const map = await retrieve(TASK_B, diskSource(flask), { cochange, budgetTokens: 4915, style: 'map' });
+    for (const p of ['src/flask/cli.py', 'tests/test_cli.py', 'docs/cli.rst']) {
+      expect(map.receipt.find((x) => x.path === p)?.mode).toBe('outline');
+    }
+    expect(map.text).toMatch(/run_command\(/);
+    expect(map.text).toMatch(/Open a Shell/);
+    expect(map.usedTokens).toBeLessThan(text.usedTokens / 2);
+  }, 60_000);
+});
+
+describe('map style', () => {
+  it('outlines a large file by its definitions, with line ranges', async () => {
+    const r = await retrieve('change helper_7 and helper_300', source(repo), { budgetTokens: 3000, style: 'map' });
+    const big = r.files.find((f) => f.path === 'src/shop/big.py');
+    expect(big?.mode).toBe('outline');
+    expect(big?.text).toMatch(/most relevant lines: /);
+    expect(big?.text).toMatch(/^\s+\d+-\d+\s+def helper_7\(value\):/m);
+    // Capped: the rest are counted, not listed.
+    expect(big?.text).toMatch(/\(\d+ more; search_workspace finds them\)/);
+    expect(r.text).toContain('read_file(path, start, end)');
+    expect(r.usedTokens).toBeLessThanOrEqual(3000);
+  });
+
+  it('sends small files whole and outlines docs by section', async () => {
+    const docs = { ...repo, 'docs/guide.rst': `Guide\n=====\n\nIntro.\n\n${'text\n'.repeat(400)}\nCheckout\n--------\n\nHow checkout works.\n\n    def example():\n        pass\n` };
+    const r = await retrieve('Let the Cart apply a discount at checkout', source(docs), { style: 'map', cochange: buildCochange(log) });
+    expect(r.files.find((f) => f.path === 'src/shop/cart.py')?.mode).toBe('full');
+    const guide = r.files.find((f) => f.path === 'docs/guide.rst');
+    if (guide) {
+      expect(guide.text).toMatch(/# Guide/);
+      expect(guide.text).toMatch(/## Checkout/);
+      expect(guide.text).not.toMatch(/def example/);
+    }
+  });
+
+  it('keeps pinned line ranges as text', async () => {
+    const r = await retrieve('unrelated words', source(repo), {
+      pins: [{ path: 'src/shop/big.py', startLine: 301, endLine: 302, label: '@helper_100' }],
+      budgetTokens: 900,
+      style: 'map',
+    });
+    const big = r.files.find((f) => f.path === 'src/shop/big.py');
+    expect(big?.mode).toBe('outline');
+    expect(big?.text).toContain('301  def helper_100(value):');
+    expect(r.receipt.find((x) => x.path === 'src/shop/big.py')?.reason).toBe('pinned');
+  });
 });

@@ -40,9 +40,19 @@ export interface LineRange {
   end: number;
 }
 
+/**
+ * How packed files are shown. `text`: whole files or excerpts. `map`: small files whole,
+ * every other file as an outline of its definitions with line ranges and the line ranges
+ * most relevant to the task; the agent then reads only what it needs. `map` keeps the
+ * conversation small, which matters because every later step resends it.
+ */
+export type RetrieveStyle = 'text' | 'map';
+
+export type PackMode = 'full' | 'excerpt' | 'outline';
+
 export interface PackedFile {
   path: string;
-  mode: 'full' | 'excerpt';
+  mode: PackMode;
   /** 1-based inclusive line ranges included. */
   ranges: LineRange[];
   totalLines: number;
@@ -56,7 +66,7 @@ export interface ReceiptRow {
   reason: Reason;
   evidence: string;
   tokens: number;
-  mode: 'full' | 'excerpt';
+  mode: PackMode;
   score: number;
 }
 
@@ -92,7 +102,16 @@ export interface RetrieveOptions {
   pins?: Pin[];
   /** Omit (or pass an unavailable index) to run without the co-change signal. */
   cochange?: CochangeIndex;
+  /** Default `text`. */
+  style?: RetrieveStyle;
 }
+
+/** In `map` style, files up to this size are still sent whole. */
+const MAP_FULL_MAX_TOKENS = 500;
+/** Most outline entries listed per file. */
+const MAP_MAX_ENTRIES = 20;
+/** Most unpinned files in a map; the rest are listed as evicted, so the agent still sees them. */
+const MAP_MAX_FILES = 6;
 
 /** Token estimate used for the budget. No tokenizer: Ripple must work with any model. */
 export function estimateTokens(text: string): number {
@@ -310,11 +329,13 @@ function renderRanges(doc: Doc, ranges: LineRange[]): string {
   return ranges.map((r) => withLineNumbers(doc.text, r.start, r.end)).join('\n   ...\n');
 }
 
-function fileHeader(doc: Doc, mode: 'full' | 'excerpt', ranges: LineRange[]): string {
+function fileHeader(doc: Doc, mode: PackMode, ranges: LineRange[]): string {
   const where =
     mode === 'full'
       ? `full file, ${doc.lines.length} lines`
-      : `excerpt: lines ${ranges.map((r) => `${r.start}-${r.end}`).join(', ')} of ${doc.lines.length}`;
+      : mode === 'outline'
+        ? `outline, ${doc.lines.length} lines`
+        : `excerpt: lines ${ranges.map((r) => `${r.start}-${r.end}`).join(', ')} of ${doc.lines.length}`;
   return `=== ${doc.path} (${where}) ===`;
 }
 
@@ -358,7 +379,75 @@ function excerpt(doc: Doc, terms: string[], idf: Map<string, number>, cap: numbe
   return chosen;
 }
 
-function render(result: Omit<RetrieveResult, 'text' | 'usedTokens'>): string {
+/** Section headings of a reStructuredText or Markdown file, 0-based lines. */
+function headings(lines: string[]): { line: number; title: string; level: number }[] {
+  const out: { line: number; title: string; level: number }[] = [];
+  const rstLevels: string[] = [];
+  for (let k = 0; k < lines.length; k++) {
+    const line = lines[k] ?? '';
+    const md = /^(#{1,4})\s+(.+)/.exec(line);
+    if (md) {
+      out.push({ line: k, title: md[2]!.trim(), level: md[1]!.length });
+      continue;
+    }
+    const under = lines[k + 1] ?? '';
+    const m = /^([=\-~^"'`#*+])\1{2,}\s*$/.exec(under);
+    if (m && line.trim() && !/^([=\-~^"'`#*+])\1{2,}\s*$/.test(line) && under.trim().length >= line.trim().length) {
+      const ch = m[1]!;
+      if (!rstLevels.includes(ch)) rstLevels.push(ch);
+      out.push({ line: k, title: line.trim(), level: rstLevels.indexOf(ch) + 1 });
+    }
+  }
+  return out;
+}
+
+/** Relevance of lines [start, end) to the request terms. */
+function blockScore(doc: Doc, start: number, end: number, terms: string[], idf: Map<string, number>): number {
+  const seen = new Map<string, number>();
+  for (const w of words(doc.lines.slice(start, end).join('\n'))) seen.set(w, (seen.get(w) ?? 0) + 1);
+  let score = 0;
+  for (const t of terms) score += (idf.get(t) ?? 0) * Math.min(seen.get(t) ?? 0, 3);
+  return score;
+}
+
+/**
+ * A file as a map: its definitions (or section headings) with line ranges, the most relevant
+ * ones first when there are too many, plus the line ranges that match the request best.
+ */
+function outlineText(doc: Doc, terms: string[], idf: Map<string, number>, relevant: LineRange[]): string {
+  type Entry = { start: number; end: number; label: string; score: number };
+  let entries: Entry[] = [];
+  // Documentation is mapped by its sections; code examples inside it are not definitions.
+  const defs = DOC_FILE.test(doc.path) ? [] : doc.symbols.filter((s) => s.indent <= 4);
+  if (defs.length) {
+    for (const s of defs) {
+      const block = symbolBlock(doc.lines, s);
+      const label = (doc.lines[s.line] ?? '').trim().replace(/\s+/g, ' ').slice(0, 90);
+      entries.push({ start: block.start + 1, end: block.end, label: s.indent ? `  ${label}` : label, score: blockScore(doc, block.start, block.end, terms, idf) });
+    }
+  } else {
+    const hs = headings(doc.lines);
+    for (const [k, h] of hs.entries()) {
+      const end = (hs[k + 1]?.line ?? doc.lines.length) - 1;
+      entries.push({ start: h.line + 1, end: Math.max(h.line + 1, end), label: `${'#'.repeat(h.level)} ${h.title.slice(0, 80)}`, score: blockScore(doc, h.line, end, terms, idf) });
+    }
+  }
+  const total = entries.length;
+  if (entries.length > MAP_MAX_ENTRIES) {
+    // Keep the best matches, and the last entry: new code usually goes after it.
+    const last = entries.at(-1)!;
+    const best = [...entries].sort((a, b) => b.score - a.score || a.start - b.start).slice(0, MAP_MAX_ENTRIES - 1);
+    entries = [...new Set([...best, last])].sort((a, b) => a.start - b.start);
+  }
+  const out: string[] = [];
+  if (relevant.length) out.push(`most relevant lines: ${relevant.map((r) => `${r.start}-${r.end}`).join(', ')}`);
+  for (const e of entries) out.push(`${String(e.start).padStart(5)}-${String(e.end).padEnd(5)} ${e.label}`);
+  if (total > entries.length) out.push(`(${total - entries.length} more; search_workspace finds them)`);
+  if (total === 0 && !relevant.length) out.push('(no definitions or headings found)');
+  return out.join('\n');
+}
+
+function render(result: Omit<RetrieveResult, 'text' | 'usedTokens'>, style: RetrieveStyle = 'text'): string {
   const out: string[] = [];
   out.push(`Context for: ${result.task.replace(/\s+/g, ' ').slice(0, 160)}`);
   out.push(`Budget ${result.budgetTokens} tokens (estimated as characters / 4).`);
@@ -370,7 +459,11 @@ function render(result: Omit<RetrieveResult, 'text' | 'usedTokens'>): string {
     if (result.evictedUnlisted) out.push(`- and ${result.evictedUnlisted} lower-ranked file(s)`);
   }
   for (const n of result.notes) out.push(`Note: ${n}`);
-  out.push('Excerpts show line numbers that are not part of the files. Use read_file for anything not shown.');
+  out.push(
+    style === 'map'
+      ? 'Outlines list definitions and sections as "start-end label". Read only the ranges you need with read_file(path, start, end).'
+      : 'Excerpts show line numbers that are not part of the files. Use read_file for anything not shown.',
+  );
   for (const f of result.files) out.push('', f.text.trimEnd());
   return out.join('\n');
 }
@@ -418,6 +511,7 @@ export async function retrieve(task: string, source: RetrieveSource, options: Re
     budget = DEFAULT_BUDGET_TOKENS;
   }
   const pins = options.pins ?? [];
+  const style: RetrieveStyle = options.style ?? 'text';
   const notes: string[] = [];
   const docs = await loadDocs(source, (p) => !SKIP.test(p) || pins.some((pin) => pin.path === p));
   const byPath = new Map(docs.map((d) => [d.path, d]));
@@ -594,6 +688,10 @@ export async function retrieve(task: string, source: RetrieveSource, options: Re
       evict(c, 'relevance too low compared with the best match');
       continue;
     }
+    if (style === 'map' && !isPinned && receipt.filter((r) => r.reason !== 'pinned').length >= MAP_MAX_FILES) {
+      evict(c, `the map lists the top ${MAP_MAX_FILES} files`);
+      continue;
+    }
     const fullRange = [{ start: 1, end: doc.lines.length }];
     const fullText = `${fileHeader(doc, 'full', fullRange)}\n${withLineNumbers(doc.text)}\n`;
     const fullTokens = estimateTokens(fullText);
@@ -603,7 +701,18 @@ export async function retrieve(task: string, source: RetrieveSource, options: Re
     const wholeFilePinned = isPinned && c.pinned.some((p) => p.startLine === undefined);
     const mayBeFull = isPinned ? wholeFilePinned || fullTokens <= share : fullTokens <= fullCap;
     let file: PackedFile | undefined;
-    if (mayBeFull && fullTokens <= share) {
+    if (style === 'map' && !(fullTokens <= MAP_FULL_MAX_TOKENS && fullTokens <= share)) {
+      // Pinned ranges are what the user pointed at: send their text, outline the rest.
+      const required = c.pinned
+        .filter((p) => p.startLine !== undefined)
+        .map((p) => ({ start: p.startLine ?? 1, end: Math.min(doc.lines.length, p.endLine ?? p.startLine ?? 1) }));
+      // The best-matching ranges, chosen as for an excerpt but listed by number only.
+      const relevant = excerpt(doc, terms, idf, Math.min(excerptCap, 1500), []).slice(0, 4);
+      const pinnedText = required.length ? `\n${renderRanges(doc, mergeRanges(required))}` : '';
+      const text = `${fileHeader(doc, 'outline', [])}\n${outlineText(doc, terms, idf, relevant)}${pinnedText}\n`;
+      const tokens = estimateTokens(text);
+      if (tokens <= share) file = { path: doc.path, mode: 'outline', ranges: mergeRanges(required), totalLines: doc.lines.length, text, tokens };
+    } else if (mayBeFull && fullTokens <= share) {
       file = { path: doc.path, mode: 'full', ranges: fullRange, totalLines: doc.lines.length, text: fullText, tokens: fullTokens };
     } else {
       const cap = isPinned ? share : Math.min(share, excerptCap);
@@ -644,7 +753,7 @@ export async function retrieve(task: string, source: RetrieveSource, options: Re
     notes,
   };
   if (receipt.length === 0) notes.push('no file matched the request; use search_workspace');
-  let text = render(result);
+  let text = render(result, style);
   // Hard guarantee. Drop the lowest-ranked unpinned file, then trim, until it fits.
   while (estimateTokens(text) > budget) {
     let k = result.files.length - 1;
@@ -653,7 +762,7 @@ export async function retrieve(task: string, source: RetrieveSource, options: Re
     const [gone] = result.receipt.splice(k, 1);
     result.files.splice(k, 1);
     if (gone) result.evicted.unshift({ path: gone.path, reason: 'over budget after the receipt was added', evidence: gone.evidence, score: gone.score });
-    text = render(result);
+    text = render(result, style);
   }
   if (estimateTokens(text) > budget) text = `${text.slice(0, budget * 4 - 40)}\n[cut to fit the budget]`;
   return { ...result, usedTokens: estimateTokens(text), text };

@@ -82,6 +82,12 @@
           "default": true,
           "description": "Send a short warm-up turn through TrueForge on activation so a local model is loaded before the first edit."
         },
+        "ripple.retrievalStyle": {
+          "type": "string",
+          "enum": ["map", "text"],
+          "default": "map",
+          "description": "How retrieve_context shows files: \"map\" sends outlines with line ranges and lets the agent read what it needs (small conversations); \"text\" sends whole files or excerpts."
+        },
         "ripple.fallbackModel": {
           "type": "string",
           "default": "ollama/qwen-coder-tools-7b",

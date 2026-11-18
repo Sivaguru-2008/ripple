@@ -315,7 +315,7 @@ suite passes.
 | No keys committed | key patterns in the whole git history: 0; only the example config tracked | pass |
 | Agent definitions committed; LICENSE; example config | present | pass |
 | README setup from a clean clone | fresh clone: `npm ci`, typecheck, 161 tests pass (3 skipped: no Flask clone beside it), build; `npm run models` skips providers without a key | pass |
-| Inline edit with keybinding, per-hunk review | `Ctrl+Alt+R`; Task A on `gemini-3.5-flash-lite`: 2 hunks, `off`/`n`/`OFF` false, docstring complete, undo clean | pass |
+| Inline edit with keybinding, per-hunk review | `Ctrl+Alt+R` (replaced by `Ctrl+;` the same evening, see below); Task A on `gemini-3.5-flash-lite`: 2 hunks, `off`/`n`/`OFF` false, docstring complete, undo clean | pass |
 | Streaming and cancel | mock suite: cancel ended the run 23 ms after the request, `git status` clean | pass |
 | @file and @symbol mentions | `@FlaskGroup` and `@config.py` pinned in the receipt | pass |
 | Diff review, nothing written silently, undo | partial accept, reject all, `git status` clean while reviews are open | pass |
@@ -343,6 +343,14 @@ JSON, undo leaves `git status` clean.
 
 Task B tally on real models: 3 passes on the primary model, 1 completion via fallback, 3 failures
 (provider timeout, iteration limit, finishing with broken tests; all three addressed since).
+
+Found in the hand check (18 Nov, 22:30): pressing `Ctrl+Alt+R` over the selected
+`get_debug_flag` replaced it with a single character, `̥` (U+0325, combining ring below). On
+Windows `Ctrl+Alt` is AltGr, and the active **English (India)** layout types ISO 15919 marks with
+AltGr, so the shortcut typed a character instead of starting the inline edit. The saved file was
+not affected. Inline edit now uses `Ctrl+;` (free in VS Code's default keybindings, read from the
+installed VS Code; no Alt, so no AltGr layout can intercept it); a unit test rejects any
+`Ctrl+Alt+<letter or digit>` binding.
 
 Not verified: the uncommitted change in `scripts/start-stack.mjs` from a separate session starts
 TrueForge with `HOST=0.0.0.0` (all network interfaces, no authentication); it was not used.

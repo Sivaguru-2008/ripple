@@ -5,7 +5,14 @@
       "name": "Run Ripple",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}"],
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--disable-extension",
+        "ms-dotnettools.csharp",
+        "--disable-extension",
+        "ms-dotnettools.csdevkit",
+        "${workspaceFolder}"
+      ],
       "outFiles": ["${workspaceFolder}/dist/**/*.js"],
       "preLaunchTask": "npm: build"
     },
@@ -15,7 +22,14 @@
       "name": "Run Ripple on the Flask demo",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/../flask-demo"],
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--disable-extension",
+        "ms-dotnettools.csharp",
+        "--disable-extension",
+        "ms-dotnettools.csdevkit",
+        "${workspaceFolder}/../flask-demo"
+      ],
       "envFile": "${workspaceFolder}/.env.demo",
       "outFiles": ["${workspaceFolder}/dist/**/*.js"],
       "preLaunchTask": "npm: build"

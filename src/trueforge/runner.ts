@@ -31,6 +31,25 @@ export interface RunRequest {
   nudge?: string;
   /** Total attempts for retryable model errors (cold model, timeout). Default 2. */
   attempts?: number;
+  /**
+   * The last test command the agent ran in this run, if any. When the agent ends its turn while
+   * that run failed, Ripple asks it to fix the failure before finishing.
+   */
+  lastTestResult?(runId: string): { failed: boolean; output: string } | undefined;
+  /** Follow-up turns allowed for failing tests. Default 2. */
+  testFixTurns?: number;
+}
+
+/** The follow-up turn sent when the agent ended its turn while its last test run failed. */
+export function testFailureTurn(output: string): string {
+  const tail = output.trim().split(/\r?\n/).slice(-25).join('\n');
+  return (
+    'Your last test run failed, so the task is not finished. End of its output:\n' +
+    `${tail}\n` +
+    'Fix the code or the test so that the new test and the existing ones pass, without changing ' +
+    'unrelated tests. Then run the whole test file again, and finish only when it passes. If you ' +
+    'cannot make it pass, say so plainly.'
+  );
 }
 
 export interface RunResult {
@@ -44,6 +63,8 @@ export interface RunResult {
   fallback?: { from: string; to: string; reason: string };
   /** Hunks written to the workspace by this run. Set when status is `done`. */
   hunksWritten?: number;
+  /** The agent finished although the last test command it ran had failed. */
+  testsFailing?: boolean;
 }
 
 /**
@@ -53,13 +74,15 @@ export interface RunResult {
 export function describeOutcome(result: RunResult): string | undefined {
   if (result.status !== 'done') return undefined;
   const wroteNothing = result.hunksWritten === 0;
+  const failingTests = result.testsFailing ? ' The last test run the agent made failed: check the changes before keeping them.' : '';
   if (result.fallback) {
     const switched = `${result.fallback.from} failed (${result.fallback.reason}); ${result.fallback.to} took over`;
     return wroteNothing
       ? `${switched} and finished without changing any file. The task was not carried out.`
-      : `${switched} and wrote ${result.hunksWritten ?? 'the'} change(s). Review them: they come from the fallback model.`;
+      : `${switched} and wrote ${result.hunksWritten ?? 'the'} change(s). Review them: they come from the fallback model.${failingTests}`;
   }
-  return wroteNothing ? 'The run finished without changing any file.' : undefined;
+  if (wroteNothing) return 'The run finished without changing any file.';
+  return failingTests ? `The agent finished, but its tests do not pass.${failingTests}` : undefined;
 }
 
 export interface RunnerDeps {
@@ -159,6 +182,14 @@ export class Runner {
           log(`[run] ${run.id} turn ended without a write tool call; sending one follow-up turn`);
           outcome = await turn(req.nudge);
         }
+        // An agent that ends while its own last test run failed is not done: show it the failure.
+        const fixTurns = req.testFixTurns ?? 2;
+        for (let k = 1; k <= fixTurns && outcome.status === 'done' && !current.cancelled; k++) {
+          const last = req.lastTestResult?.(run.id);
+          if (!last?.failed) break;
+          log(`[run] ${run.id} ended its turn with failing tests; asking it to fix them (${k} of ${fixTurns})`);
+          outcome = await turn(testFailureTurn(last.output));
+        }
 
         log(`[run] ${run.id} turn finished: ${outcome.status}${outcome.message ? ` (${outcome.message})` : ''}`);
 
@@ -184,6 +215,7 @@ export class Runner {
             model: activeSpec.model.name,
             hunksWritten,
             ...(fallback ? { fallback } : {}),
+            ...(req.lastTestResult?.(run.id)?.failed ? { testsFailing: true } : {}),
           };
           const warning = describeOutcome(result);
           if (warning) {

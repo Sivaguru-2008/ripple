@@ -205,6 +205,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
   const budgetByRun = new Map<string, number>();
   /** Active model name per run. */
   const modelByRun = new Map<string, string>();
+  /** The last test command the agent ran, per run: Ripple will not let a run finish on a failure. */
+  const lastTestByRun = new Map<string, { failed: boolean; output: string }>();
   const openBufferText = (p: string): string | undefined => {
     try {
       const target = fileUri(p).fsPath;
@@ -300,6 +302,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
         const root = workspaceRoot();
         const res = await runShellCommand(root, command);
         log(`[command] ${run.id}: \`${command}\` → ${res.isError ? `failed: ${res.text.slice(-600).replace(/\s+/g, ' ')}` : 'ok'}`);
+        // The runner will not let the agent finish while its last test run failed.
+        if (isTestCommand(command)) lastTestByRun.set(run.id, { failed: res.isError, output: res.text });
         return { text: note + res.text, isError: res.isError };
       } catch (err) {
         return { text: `command failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
@@ -574,6 +578,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
             fallbackSpec,
             message,
             deferred: true,
+            lastTestResult: (runId) => lastTestByRun.get(runId),
             // Small models often stop after reading, or write the edit as text. One follow-up turn.
             nudge:
               'You stopped without proposing any change, so nothing was written. If the task needs files changed, continue now: call propose_write as a real tool call (not JSON or Markdown text) for each file that must change, one file per call. To add code, use {insert_after_line, line_text, new_text}; to change code, use {old_text, new_text} copied exactly from read_file. Cover the implementation, its test and its documentation. If the task needs no change, say so in one sentence.',

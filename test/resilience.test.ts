@@ -369,6 +369,65 @@ describe('Task C Resilience & Model Fallback', () => {
     expect(disk['a.txt']).toBe('ONE\n');
   });
 
+  it('does not let the agent finish while its last test run failed', async () => {
+    const { runner, mockTf, primarySpec, tx, logs } = createFixture({ 'a.txt': 'one\n' });
+    const messages: string[] = [];
+    const lastTest = new Map<string, { failed: boolean; output: string }>();
+    let turnNo = 0;
+    mockTf.runTurn.mockImplementation(async (_s: string, msg: string) => {
+      turnNo++;
+      messages.push(msg);
+      const run = tx.activeRun()!;
+      if (turnNo === 1) {
+        await tx.execute(run.token, 'propose_write', { path: 'a.txt', edits: [{ old_text: 'one', new_text: 'ONE' }] });
+        lastTest.set(run.id, { failed: true, output: 'FAILED tests/test_a.py::test_one - assert 1 == 0\n1 failed, 3 passed' });
+      } else {
+        lastTest.set(run.id, { failed: false, output: '4 passed' });
+      }
+      return { status: 'done' };
+    });
+
+    const result = await runner.run({
+      spec: primarySpec,
+      message: 'Change a and test it',
+      deferred: true,
+      decideOther: async () => ({ allow: true }),
+      lastTestResult: (id) => lastTest.get(id),
+    });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toContain('Your last test run failed');
+    expect(messages[1]).toContain('1 failed, 3 passed');
+    expect(result.status).toBe('done');
+    expect(result.testsFailing).toBeUndefined();
+    expect(result.message).toBeUndefined();
+    expect(logs.some((l) => l.includes('ended its turn with failing tests'))).toBe(true);
+  });
+
+  it('stops asking after two follow-ups and says the tests still fail', async () => {
+    const { runner, mockTf, primarySpec, tx } = createFixture({ 'a.txt': 'one\n' });
+    let turns = 0;
+    mockTf.runTurn.mockImplementation(async () => {
+      turns++;
+      const run = tx.activeRun()!;
+      if (turns === 1) await tx.execute(run.token, 'propose_write', { path: 'a.txt', edits: [{ old_text: 'one', new_text: 'ONE' }] });
+      return { status: 'done' };
+    });
+
+    const result = await runner.run({
+      spec: primarySpec,
+      message: 'Change a',
+      deferred: true,
+      decideOther: async () => ({ allow: true }),
+      lastTestResult: () => ({ failed: true, output: '1 failed' }),
+    });
+
+    expect(turns).toBe(3);
+    expect(result.status).toBe('done');
+    expect(result.testsFailing).toBe(true);
+    expect(result.message).toMatch(/tests do not pass/);
+  });
+
   it('performs successful end-to-end recovery preserving transaction identity', async () => {
     const { runner, mockTf, primarySpec, fallbackSpec, tx, disk, logs } = createFixture();
 

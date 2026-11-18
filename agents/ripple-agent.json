@@ -61,6 +61,6 @@
         }
       }
     },
-    "iteration_limit": 25
+    "iteration_limit": 60
   }
 }

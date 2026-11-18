@@ -30,6 +30,9 @@ describe('agents/ripple-agent.json', () => {
     // Compaction is the TrueForge context-engineering feature this agent relies on. At 12,000 a
     // passing Task B run compacted 14 times and re-read after each; 20,000 keeps it to a few.
     expect(spec.config?.contextManagement?.compaction).toEqual({ enabled: true, trigger: { type: 'input_tokens', value: 20000 } });
+    // TrueForge counts iterations since the last compaction; at 25 a Task B run with only two
+    // compactions stopped mid-task (18 Nov). 60 leaves room between compactions.
+    expect(spec.config?.iterationLimit).toBe(60);
     expect(spec.instructions).not.toMatch(/epoch/);
     expect(spec.instructions).toMatch(/retrieve_context/);
     expect(spec.instructions).toMatch(/run_command/);

@@ -8,9 +8,12 @@ Sivaguru Murugan, solo. [College or employer]. GitHub: [handle].
 
 ## 2. Starting point
 
-From scratch: an empty repository, no upstream fork, no code copied from other projects.
-Runtime libraries, used as dependencies: `@truefoundry/trueforge-sdk` 0.185.0,
-`@modelcontextprotocol/sdk` 1.32.2, `zod` (all MIT). TrueForge server pinned to 0.185.1.
+From scratch, not a fork. Two editor-side files adapt code from Continue
+(https://github.com/continuedev/continue, commit `5522c6f44ca0ac3528b37244818fbfa39b5af470`,
+Apache 2.0): the green and red line decorations of the diff review and the per-hunk
+Accept/Reject CodeLens, rewired to Ripple's transaction hunks; licence, attribution and changes
+are in the README. Continue's agent loop is not used. Runtime libraries: `@truefoundry/trueforge-sdk`
+0.185.0, `@modelcontextprotocol/sdk` 1.32.2, `zod` (all MIT). TrueForge server pinned to 0.185.1.
 
 ## 3. Architecture on TrueForge
 

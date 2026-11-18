@@ -45,7 +45,19 @@ talks to a model.
 
 ## Starting point and borrowed code
 
-Ripple was started from an empty repository. No code was copied from other projects.
+Ripple was started from an empty repository; it is not a fork. Two files adapt editor-side code
+from [Continue](https://github.com/continuedev/continue) at commit
+`5522c6f44ca0ac3528b37244818fbfa39b5af470` (Apache License 2.0; licence text in
+[licenses/Apache-2.0.txt](licenses/Apache-2.0.txt)). Each keeps Continue's copyright and licence
+header and says what was changed:
+
+| Ripple file | Continue file at that commit | What Ripple changed |
+|---|---|---|
+| `src/ui/decorations.ts` | `extensions/vscode/src/diff/vertical/decorations.ts` | Removed the index decorations of Continue's streaming diff, added index guards and `dispose()`; driven by Ripple's review controller |
+| `src/ui/hunkCodeLens.ts` | `extensions/vscode/src/lang-server/codeLens/providers/VerticalPerLineCodeLensProvider.ts` | Lenses carry a Ripple proposal id, hunk id and decision; commands are `ripple.acceptHunk` / `ripple.rejectHunk`; decided hunks show their status; a file-level Accept all / Reject all lens; no dependency on Continue's diff manager |
+
+Continue's agent loop is not used: the loop runs on TrueForge. No code comes from other
+Forge-a-thon entries.
 
 Runtime dependencies (used as libraries, not copied):
 
@@ -58,4 +70,5 @@ Runtime dependencies (used as libraries, not copied):
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The two files adapted from Continue remain under the Apache
+License 2.0 ([licenses/Apache-2.0.txt](licenses/Apache-2.0.txt)).

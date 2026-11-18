@@ -210,4 +210,30 @@ describe('map style', () => {
     expect(big?.text).toContain('301  def helper_100(value):');
     expect(r.receipt.find((x) => x.path === 'src/shop/big.py')?.reason).toBe('pinned');
   });
+
+  it('sees an edit in the middle of a file even when its length and ends are unchanged', async () => {
+    const pad = (c: string) => `${c} = 0\n`.repeat(40);
+    const files: Record<string, string> = { 'src/mod.py': `${pad('x')}def alpha_handler():\n    pass\n${pad('y')}` };
+    const first = await retrieve('alpha handler', source(files));
+    expect(first.receipt.some((r) => r.path === 'src/mod.py')).toBe(true);
+    // Same length, same first and last 100 characters, different middle.
+    files['src/mod.py'] = files['src/mod.py']!.replace('alpha_handler', 'omega_handler');
+    const second = await retrieve('omega handler', source(files));
+    expect(second.receipt.find((r) => r.path === 'src/mod.py')?.evidence).toMatch(/omega/);
+  });
+
+  it('expands import neighbours for TypeScript/JavaScript codebases', async () => {
+    const tsRepo: Record<string, string> = {
+      'src/core/auth.ts': 'export function checkAuth() { return true; }\n',
+      'src/core/server.ts': 'import { checkAuth } from "./auth";\nexport function start() { return checkAuth(); }\n',
+      'test/server.test.ts': 'import { start } from "../src/core/server";\nexport function testServer() { start(); }\n',
+    };
+    const r = await retrieve('start the server', source(tsRepo), { budgetTokens: 4000 });
+    const receiptPaths = r.receipt.map((x) => x.path);
+    expect(receiptPaths).toContain('src/core/server.ts');
+    // server.ts imports auth.ts, so auth.ts should be expanded via import relationship
+    expect(receiptPaths).toContain('src/core/auth.ts');
+    const authRow = r.receipt.find((x) => x.path === 'src/core/auth.ts');
+    expect(authRow?.evidence).toMatch(/imported by src\/core\/server\.ts/);
+  });
 });

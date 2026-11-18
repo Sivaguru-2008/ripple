@@ -468,8 +468,24 @@ function render(result: Omit<RetrieveResult, 'text' | 'usedTokens'>, style: Retr
   return out.join('\n');
 }
 
-async function loadDocs(source: RetrieveSource, wanted: (path: string) => boolean): Promise<Doc[]> {
-  const paths = (await source.listFiles()).map((p) => p.replace(/\\/g, '/')).filter(wanted).slice(0, MAX_FILES_SCANNED);
+/** Parsed documents by path, reused across retrievals while the text is unchanged. Oldest out first. */
+const docCache = new Map<string, { doc: Doc }>();
+const MAX_CACHE_ENTRIES = 2000;
+
+async function loadDocs(source: RetrieveSource, wanted: (path: string) => boolean, termsHint?: string[]): Promise<Doc[]> {
+  let paths = (await source.listFiles()).map((p) => p.replace(/\\/g, '/')).filter(wanted);
+  if (paths.length > MAX_FILES_SCANNED) {
+    const termSet = new Set(termsHint ?? []);
+    const isPriority = (p: string) => {
+      const pWords = words(p);
+      return pWords.some((w) => termSet.has(w));
+    };
+    const priority = paths.filter(isPriority);
+    const rest = paths.filter((p) => !isPriority(p));
+    paths = [...priority, ...rest].slice(0, MAX_FILES_SCANNED);
+  } else {
+    paths = paths.slice(0, MAX_FILES_SCANNED);
+  }
   const docs: Doc[] = [];
   const BATCH = 32;
   for (let k = 0; k < paths.length; k += BATCH) {
@@ -482,11 +498,23 @@ async function loadDocs(source: RetrieveSource, wanted: (path: string) => boolea
           return undefined;
         }
         if (text.length > MAX_FILE_BYTES || text.includes('\u0000')) return undefined;
+        // Reuse the parsed document only when the text is exactly the same: staged edits can
+        // change a file's middle without changing its length or its first and last lines.
+        const cached = docCache.get(path);
+        if (cached && cached.doc.text === text) {
+          return cached.doc;
+        }
         const lines = text.split(/\r?\n/);
         const tf = new Map<string, number>();
         const all = words(text);
         for (const w of all) tf.set(w, (tf.get(w) ?? 0) + 1);
-        return { path, text, lines, tf, length: all.length, pathWords: new Set(words(path)), nameWords: new Set(words(path.slice(path.lastIndexOf('/') + 1))), symbols: findSymbols(lines) };
+        const doc: Doc = { path, text, lines, tf, length: all.length, pathWords: new Set(words(path)), nameWords: new Set(words(path.slice(path.lastIndexOf('/') + 1))), symbols: findSymbols(lines) };
+        if (docCache.size >= MAX_CACHE_ENTRIES) {
+          const firstKey = docCache.keys().next().value;
+          if (firstKey) docCache.delete(firstKey);
+        }
+        docCache.set(path, { doc });
+        return doc;
       }),
     );
     for (const d of batch) if (d) docs.push(d);
@@ -513,10 +541,10 @@ export async function retrieve(task: string, source: RetrieveSource, options: Re
   const pins = options.pins ?? [];
   const style: RetrieveStyle = options.style ?? 'text';
   const notes: string[] = [];
-  const docs = await loadDocs(source, (p) => !SKIP.test(p) || pins.some((pin) => pin.path === p));
+  const terms = queryTerms(task);
+  const docs = await loadDocs(source, (p) => !SKIP.test(p) || pins.some((pin) => pin.path === p), terms);
   const byPath = new Map(docs.map((d) => [d.path, d]));
   const files = new Set(byPath.keys());
-  const terms = queryTerms(task);
 
   // ---- Lexical and symbol search (BM25 over file text, plus path and symbol-name matches).
   const df = new Map<string, number>();
@@ -626,11 +654,18 @@ export async function retrieve(task: string, source: RetrieveSource, options: Re
   // ---- Expansion 3: import neighbours of the seeds, both directions.
   const byModule = new Map<string, string[]>();
   for (const p of files) {
-    if (!p.endsWith('.py')) continue;
-    const mod = p.replace(/\.py$/, '').replace(/\/__init__$/, '').split('/');
-    for (let k = 0; k < mod.length; k++) {
-      const key = mod.slice(k).join('/');
-      byModule.set(key, [...(byModule.get(key) ?? []), p]);
+    if (p.endsWith('.py')) {
+      const mod = p.replace(/\.py$/, '').replace(/\/__init__$/, '').split('/');
+      for (let k = 0; k < mod.length; k++) {
+        const key = mod.slice(k).join('/');
+        byModule.set(key, [...(byModule.get(key) ?? []), p]);
+      }
+    } else if (/\.(m?[jt]sx?|cjs)$/.test(p)) {
+      const mod = p.replace(/\.(m?[jt]sx?|cjs)$/, '').replace(/\/index$/, '').split('/');
+      for (let k = 0; k < mod.length; k++) {
+        const key = mod.slice(k).join('/');
+        byModule.set(key, [...(byModule.get(key) ?? []), p]);
+      }
     }
   }
   const importCache = new Map<string, string[]>();
@@ -684,7 +719,7 @@ export async function retrieve(task: string, source: RetrieveSource, options: Re
     const doc = byPath.get(c.path);
     if (!doc) continue;
     const isPinned = c.pinned.length > 0;
-    if (!isPinned && total(c) < 0.15 * best) {
+    if (!isPinned && total(c) < 0.10 * best) {
       evict(c, 'relevance too low compared with the best match');
       continue;
     }

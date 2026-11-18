@@ -74,6 +74,29 @@ For the video, Task C by hand: stop the adapter (Ctrl+C in the `npm run stack` t
 shows "gemini/gemini-3-5-flash-lite failed (Cannot connect to API...); ollama/qwen-coder-tools-7b
 took over"; run `git status` while the review is open (clean), accept, verify, undo.
 
+## Recording the demo video
+
+`npm run demo:record` makes the submission video by itself: a fresh flask 3.1.3 clone, the real
+VS Code with Ripple driven through Tasks A, B and C by `scripts/demo/demoSuite.ts`, a full-screen
+capture with ffmpeg, then `scripts/demo/make-video.mjs` edits it into `demo-out/<time>/ripple-demo.mp4`
+with captions, a Windows text-to-speech voice-over, a title card and a summary card, model waiting
+time played faster (labelled on screen, never cut), under 4 minutes, and `scorecard.md` with the
+video timestamp of each scoring moment for the write-up.
+
+1. `npm run stack` running, Ollama running, Gemini quota fresh (after 13:30 IST).
+2. Set `VSCODE_EXECUTABLE` and `RIPPLE_TEST_PYTHON` as for `npm run task-b`.
+3. `npm run demo:record` (or `-- --mock` to check the pipeline with the scripted model, no quota).
+4. **Do not touch the computer until it prints "Recording stopped"** (about 5 minutes with the mock,
+   10 to 20 with real models). It minimizes every window, keeps the demo VS Code window maximized
+   in front, crops the taskbar out, and restores the windows at the end; anything opened meanwhile
+   would still cover VS Code.
+5. Watch the result before uploading. Task B does not succeed every time; record again if needed
+   (about 100 Gemini requests per take).
+
+The video says, on the title card, that clicks and typing are automated and the models, edits,
+tests and results are real. The TrueForge session is shown in VS Code's built-in Simple Browser,
+never the system browser. `demo-out/` is git-ignored.
+
 ## Bottlenecks seen, and what now prevents them
 
 | Seen | Cause | Now |

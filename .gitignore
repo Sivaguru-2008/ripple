@@ -13,3 +13,6 @@ config/*.json
 
 # Local scratch scripts may hold keys. Never commit them.
 test/scratch_*
+
+# Demo recordings (large; the final video is uploaded, not committed)
+demo-out/

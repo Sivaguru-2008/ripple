@@ -146,7 +146,9 @@
     "task-b": "npm run build && node test/integration/runTaskBEval.mjs",
     "task-a": "npm run build && node test/integration/runTaskCEval.mjs A",
     "task-c": "npm run build && node test/integration/runTaskCEval.mjs C",
-    "demo:prepare": "node scripts/prepare-demo.mjs"
+    "demo:prepare": "node scripts/prepare-demo.mjs",
+    "demo:record": "node scripts/demo/record-demo.mjs",
+    "demo:edit": "node scripts/demo/make-video.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

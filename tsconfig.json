@@ -17,6 +17,6 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true
   },
-  "include": ["src", "test"],
+  "include": ["src", "test", "scripts/**/*.ts"],
   "exclude": ["test/integration/*.mjs"]
 }

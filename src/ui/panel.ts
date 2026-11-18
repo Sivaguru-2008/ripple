@@ -155,12 +155,13 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private getHtml(_webview: vscode.Webview): string {
+  private getHtml(webview: vscode.Webview): string {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} https:; font-src ${webview.cspSource};">
   <title>Ripple Agent</title>
   <style>
     body {
@@ -464,7 +465,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
       if (state.sessionId) {
         const url = state.trueforgeBaseUrl + '/sessions/' + state.sessionId;
-        sessionContainer.innerHTML = '<a class="session-link" onclick="openUrl(\\'' + url + '\\')">Session in TrueForge ↗</a>';
+        sessionContainer.innerHTML = '<a class="session-link" data-url="' + escapeHtml(url) + '">Session in TrueForge ↗</a>';
       } else {
         sessionContainer.innerHTML = '';
       }
@@ -497,7 +498,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
           html += \`
             <div class="receipt-item">
               <div>
-                <span class="file-path" onclick="openFile('\${escapeHtml(row.path)}')">\${escapeHtml(row.path)}</span>
+                <span class="file-path" data-path="\${escapeHtml(row.path)}">\${escapeHtml(row.path)}</span>
                 <span class="\${badgeClass}">\${escapeHtml(row.reason)}</span>
                 <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em; float: right;">~\${row.tokens} tok</span>
               </div>
@@ -522,7 +523,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         let html = '<div class="staged-box">';
         html += '<div class="staged-title">Changes by file (' + state.staged.totalHunks + ' hunks in ' + state.staged.files.length + ' files)</div>';
         for (const f of state.staged.files) {
-          html += '<div>• <span class="file-path" onclick="openFile(\\'' + escapeHtml(f.path) + '\\')">' + escapeHtml(f.path) + '</span>: ' + escapeHtml(f.detail) + '</div>';
+          html += '<div>• <span class="file-path" data-path="' + escapeHtml(f.path) + '">' + escapeHtml(f.path) + '</span>: ' + escapeHtml(f.detail) + '</div>';
         }
         html += '</div>';
         stagedContainer.innerHTML = html;
@@ -530,6 +531,21 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         stagedContainer.innerHTML = '';
       }
     }
+
+    document.addEventListener('click', (e) => {
+      const urlEl = e.target.closest('[data-url]');
+      if (urlEl) {
+        const u = urlEl.getAttribute('data-url');
+        if (u) openUrl(u);
+        return;
+      }
+      const pathEl = e.target.closest('[data-path]');
+      if (pathEl) {
+        const p = pathEl.getAttribute('data-path');
+        if (p) openFile(p);
+        return;
+      }
+    });
 
     function openFile(p) {
       vscode.postMessage({ command: 'openFile', path: p });

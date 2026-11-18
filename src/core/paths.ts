@@ -2,16 +2,38 @@ import * as path from 'node:path';
 
 /**
  * Resolves a tool-supplied path against the workspace root and rejects anything that
- * escapes it. Accepts forward or back slashes; returns an absolute native path.
+ * escapes it or attempts to access internal VCS or secret configuration files.
+ * Accepts forward or back slashes; returns an absolute native path.
  */
 export function resolveInWorkspace(root: string, requested: string): string {
   if (requested.trim() === '') throw new Error('path is empty');
+  if (requested.includes('\0')) throw new Error('path contains invalid characters');
+
   const normalised = requested.replace(/\\/g, '/');
+  // Check for colon (alternate data streams) beyond an optional Windows drive prefix (e.g. C:)
+  const withoutDrive = /^[a-zA-Z]:/.test(normalised) ? normalised.slice(2) : normalised;
+  if (withoutDrive.includes(':')) {
+    throw new Error(`path contains invalid characters: ${requested}`);
+  }
+
   const absolute = path.resolve(root, normalised);
-  const relative = path.relative(root, absolute);
+  const relative = path.relative(root, absolute).replace(/\\/g, '/');
   if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error(`path is outside the workspace: ${requested}`);
   }
+
+  // Reject access to .git repository metadata/hooks
+  const segments = relative.split('/');
+  if (segments.includes('.git')) {
+    throw new Error(`access to internal git directory is forbidden: ${requested}`);
+  }
+
+  // Protect sensitive root-level environment secret files (.env, .env.local, etc.)
+  // (allows .env.example, .env.sample, .env.template, or fixtures in subdirectories)
+  if (segments.length === 1 && /^\.env(?:\.(?!example$|sample$|template$)[^.]+)*$/i.test(segments[0]!)) {
+    throw new Error(`access to sensitive environment file is forbidden: ${requested}`);
+  }
+
   return absolute;
 }
 

@@ -36,7 +36,7 @@ export function runShellCommand(
 ): Promise<CommandResult> {
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return new Promise((resolve) => {
-    exec(
+    const child = exec(
       command,
       {
         // VS Code reports Windows paths with a lowercase drive letter; a process started there
@@ -48,9 +48,17 @@ export function runShellCommand(
         env: { ...process.env, ...options.env },
       },
       (error, stdout, stderr) => {
+        const killed = Boolean(error && (error as unknown as { killed?: boolean }).killed);
+        if (killed && process.platform === 'win32' && child.pid) {
+          // On Windows, kill process tree so spawned sub-processes do not linger as orphans
+          exec(`taskkill /pid ${child.pid} /T /F`, () => undefined);
+        }
         const exitCode = error && typeof error.code === 'number' ? error.code : error ? 1 : 0;
         const outStr = (stdout || '').toString();
-        const errStr = (stderr || '').toString();
+        let errStr = (stderr || '').toString();
+        if (killed) {
+          errStr = errStr ? `${errStr.trimEnd()}\n[command timed out after ${timeout} ms]` : `[command timed out after ${timeout} ms]`;
+        }
         // stdout goes last: its end (a test runner's verdict) must survive truncation.
         const combined = errStr.trim() && outStr.trim() ? `[stderr]\n${errStr.trimEnd()}\n[stdout]\n${outStr}` : outStr + errStr;
         let truncated = false;

@@ -31,6 +31,27 @@ describe('resolveInWorkspace', () => {
     expect(() => resolveInWorkspace(root, '.')).toThrow();
     expect(() => resolveInWorkspace(root, '')).toThrow();
   });
+
+  it('rejects forbidden and dangerous paths', () => {
+    // Internal git metadata
+    expect(() => resolveInWorkspace(root, '.git')).toThrow(/forbidden/);
+    expect(() => resolveInWorkspace(root, '.git/config')).toThrow(/forbidden/);
+    expect(() => resolveInWorkspace(root, '.git/hooks/pre-commit')).toThrow(/forbidden/);
+    expect(() => resolveInWorkspace(root, 'sub/.git/HEAD')).toThrow(/forbidden/);
+
+    // Root secrets (.env)
+    expect(() => resolveInWorkspace(root, '.env')).toThrow(/forbidden/);
+    expect(() => resolveInWorkspace(root, '.env.local')).toThrow(/forbidden/);
+    expect(() => resolveInWorkspace(root, '.env.production')).toThrow(/forbidden/);
+
+    // Allowed template/example and test fixtures
+    expect(resolveInWorkspace(root, '.env.example')).toBe(path.join(root, '.env.example'));
+    expect(resolveInWorkspace(root, 'tests/fixtures/.env')).toBe(path.join(root, 'tests', 'fixtures', '.env'));
+
+    // Malformed/exploitative paths
+    expect(() => resolveInWorkspace(root, 'src/test\0.ts')).toThrow(/invalid characters/);
+    expect(() => resolveInWorkspace(root, 'src/file.ts:hidden')).toThrow(/invalid characters/);
+  });
 });
 
 describe('withLineNumbers', () => {

@@ -123,7 +123,7 @@
     "keybindings": [
       {
         "command": "ripple.inlineEdit",
-        "key": "ctrl+alt+r",
+        "key": "ctrl+;",
         "mac": "cmd+alt+r",
         "when": "editorTextFocus && editorHasSelection"
       },

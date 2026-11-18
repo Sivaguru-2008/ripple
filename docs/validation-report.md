@@ -301,9 +301,51 @@ Also on 18 Nov: changes from a separate agent session were reviewed and committe
 panel CSP, command timeouts, retrieval cache and JS/TS imports); its retrieval cache compared only
 length and the first and last 100 characters and was changed to compare the full text. Six
 documents it wrote (`docs/architecture.md`, `benchmark-report.md`, `improvement-roadmap.md`,
-`known-limitations.md`, `security-review.md`, `technical-audit.md`) were not committed: they
-contain numbers and an environment that were not measured here. 164 of 164 unit tests; full mock
+`known-limitations.md`, `security-review.md`, `technical-audit.md`) were deleted without being
+committed: they contain numbers and an environment that were not measured here. 164 of 164 unit tests; full mock
 suite passes.
+
+### Full check against the brief (18 Nov, 19:10 to 19:40)
+
+| Requirement | Check | Result |
+|---|---|---|
+| Agent loop on TrueForge; SDK client | `sessions.create`, `createTurnStream`, `createTurnEvents`, `subscribeToTurn`, `cancel` in `src/trueforge/client.ts` | pass |
+| Never calls a model provider; no provider hard-coded | no `fetch`, provider URL or provider name in `src/` | pass |
+| Editor capabilities as MCP tools | `read_file`, `search_workspace`, `retrieve_context`, `propose_write`, `run_command`, `replace_selection` | pass |
+| No keys committed | key patterns in the whole git history: 0; only the example config tracked | pass |
+| Agent definitions committed; LICENSE; example config | present | pass |
+| README setup from a clean clone | fresh clone: `npm ci`, typecheck, 161 tests pass (3 skipped: no Flask clone beside it), build; `npm run models` skips providers without a key | pass |
+| Inline edit with keybinding, per-hunk review | `Ctrl+Alt+R`; Task A on `gemini-3.5-flash-lite`: 2 hunks, `off`/`n`/`OFF` false, docstring complete, undo clean | pass |
+| Streaming and cancel | mock suite: cancel ended the run 23 ms after the request, `git status` clean | pass |
+| @file and @symbol mentions | `@FlaskGroup` and `@config.py` pinned in the receipt | pass |
+| Diff review, nothing written silently, undo | partial accept, reject all, `git status` clean while reviews are open | pass |
+| Task C | unreachable endpoint, retry, local model took over, longest stall 315 ms, `git status` clean | pass |
+| TrueForge session visible | the panel's link uses `/sessions/<id>`, a route in TrueForge's frontend | pass |
+| **Task B on a real model** | 2 runs on `gemini-3.1-flash-lite` | **fail, 0 of 2** |
+
+Task B, run 1: stopped by TrueForge's `iteration limit of 25` after 15.5 min. The limit counts
+steps since the last compaction; raising the compaction threshold to 20,000 (17 Nov) made the
+stretches between compactions longer than 25 steps. `iteration_limit` raised to 60.
+Run 2 (limit 60): finished `done` in 163 s with 3 files changed and a receipt with co-change
+evidence, but the model inserted its test inside the existing `TestRoutes` class, breaking 4 of
+its tests (55 passed, 4 failed), and ended the turn although its own last test run had failed.
+`gemini-3.5-flash` and `gemini-3.8-flash` returned 503 "high demand" at 19:40.
+
+Fix after run 2: Ripple records the last test command the agent ran (`isTestCommand`); when the
+agent ends its turn while that run failed, Ripple sends the failing output back and asks it to fix
+and rerun, at most twice; if the tests still fail, the run ends with the warning "The agent
+finished, but its tests do not pass". Unit tests cover both paths.
+
+Run 3 (limit 60, test check in place): **pass** in 572 s. Files `cli.py`, `test_cli.py`,
+`cli.rst`; the model's own test failed 19 times while it worked, then passed, so the new check did
+not have to step in; 3 compactions; harness: 59 passed, `flask --help` lists `config`, masked
+JSON, undo leaves `git status` clean.
+
+Task B tally on real models: 3 passes on the primary model, 1 completion via fallback, 3 failures
+(provider timeout, iteration limit, finishing with broken tests; all three addressed since).
+
+Not verified: the uncommitted change in `scripts/start-stack.mjs` from a separate session starts
+TrueForge with `HOST=0.0.0.0` (all network interfaces, no authentication); it was not used.
 
 ## Phase 2: independent verification (`E:\ripple-verify`, `963d790`)
 

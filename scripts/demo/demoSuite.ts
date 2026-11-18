@@ -168,7 +168,12 @@ export async function run(): Promise<void> {
   await shell('git status', 3500);
   if (cancelled?.status !== 'cancelled') caption(`(the run ended ${cancelled?.status} before the cancel)`);
 
-  // The real run.
+  // The real run. Its fallback is a second Gemini model (own quota) when the recorder sets one;
+  // Task C switches back to the local model.
+  const ripple = (): vscode.WorkspaceConfiguration => vscode.workspace.getConfiguration('ripple');
+  const localFallback = ripple().get<string>('fallbackModel');
+  const agentFallback = process.env['RIPPLE_DEMO_AGENT_FALLBACK'];
+  if (agentFallback) await ripple().update('fallbackModel', agentFallback, vscode.ConfigurationTarget.Global);
   await vscode.commands.executeCommand('workbench.view.extension.ripple-sidebar');
   await say('Now the full run. Commands the agent asks to run are approved automatically in this recording.', 4000);
   const reviewsB: Proposal[] = [];
@@ -221,6 +226,9 @@ export async function run(): Promise<void> {
   const files = [...new Set(reviewsB.map((p) => p.path))];
   mark('A2-files');
   await say(`Done: the agent changed ${files.length} files it found itself: ${files.join(', ')}.`, 4000);
+  if (resultB?.fallback) {
+    await say(`During the run ${resultB.fallback.from} failed (${resultB.fallback.reason.slice(0, 80)}); ${resultB.fallback.to} took over and finished, keeping the accepted edits.`, 5000);
+  }
 
   const sessionId = [...api.logs].reverse().find((l) => l.startsWith('[trueforge] session '))?.split(' ')[2];
   if (sessionId) {
@@ -251,6 +259,7 @@ export async function run(): Promise<void> {
   if (resultB?.status !== 'done') caption(`(Task B ended ${resultB?.status}: ${resultB?.message ?? ''})`);
 
   // ===================== Task C: resilience =====================
+  if (agentFallback) await ripple().update('fallbackModel', localFallback, vscode.ConfigurationTarget.Global);
   mark('taskC');
   await say('Task C, resilience. Make Gemini unreachable: stop the model endpoint TrueForge uses for it.', 4000);
   await shell('Stop-Process -Id (Get-NetTCPConnection -State Listen -LocalPort 8794).OwningProcess -Force; "Gemini endpoint stopped"', 3500);

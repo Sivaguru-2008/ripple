@@ -83,7 +83,11 @@ with captions, a Windows text-to-speech voice-over, a title card and a summary c
 time played faster (labelled on screen, never cut), under 4 minutes, and `scorecard.md` with the
 video timestamp of each scoring moment for the write-up.
 
-1. `npm run stack` running, Ollama running, Gemini quota fresh (after 13:30 IST).
+1. `npm run stack` running, Ollama running, Gemini quota fresh (after 13:30 IST). Turn on
+   Windows **Do not disturb** (notification bell in the taskbar): a desktop notification from
+   another app is recorded with the screen. If one gets in anyway, list it in `masks.json` in the
+   output folder (see the top of `scripts/demo/make-video.mjs`) and run
+   `node scripts/demo/make-video.mjs demo-out/<time>` again; it re-edits without recording.
 2. Set `VSCODE_EXECUTABLE` and `RIPPLE_TEST_PYTHON` as for `npm run task-b`.
 3. `npm run demo:record` (or `-- --mock` to check the pipeline with the scripted model, no quota).
 4. **Do not touch the computer until it prints "Recording stopped"** (about 5 minutes with the mock,
@@ -92,6 +96,11 @@ video timestamp of each scoring moment for the write-up.
    would still cover VS Code.
 5. Watch the result before uploading. Task B does not succeed every time; record again if needed
    (about 100 Gemini requests per take).
+
+During Task B the recorder sets the fallback to `gemini/gemini-3-5-flash-lite` (its own free
+quota; `RIPPLE_DEMO_AGENT_FALLBACK` overrides it), so a Flash-Lite quota error mid-run is finished
+by that model, and the video says so. Tasks A and C keep `ollama/qwen-coder-tools-7b`, which Task C
+needs because it makes Gemini unreachable.
 
 The video says, on the title card, that clicks and typing are automated and the models, edits,
 tests and results are real. The TrueForge session is shown in VS Code's built-in Simple Browser,

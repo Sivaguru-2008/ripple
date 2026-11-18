@@ -73,7 +73,11 @@ async function main() {
     execFileSync(process.execPath, [path.join(root, 'scripts', 'setup-models.mjs')], { stdio: 'inherit' });
   }
   if (!(await up('http://127.0.0.1:8794/health'))) startAdapter();
-  console.log(`Models: inline ${inline.model.name}, agent ${agent.model.name}, fallback ollama/qwen-coder-tools-7b`);
+  // Task B's fallback is a second Gemini model with its own free daily quota: if the agent's model
+  // runs out mid-run, it finishes the task (the local 7B model cannot). Tasks A and C keep the local
+  // model, which Task C needs because it makes Gemini unreachable.
+  const agentFallback = mock ? '' : (process.env.RIPPLE_DEMO_AGENT_FALLBACK ?? 'gemini/gemini-3-5-flash-lite');
+  console.log(`Models: inline ${inline.model.name}, agent ${agent.model.name}, fallback ollama/qwen-coder-tools-7b${agentFallback ? ` (Task B: ${agentFallback})` : ''}`);
   const inlinePath = path.join(out, 'ripple-inline.json');
   const agentPath = path.join(out, 'ripple-agent.json');
   writeFileSync(inlinePath, JSON.stringify(inline, null, 2));
@@ -173,6 +177,7 @@ async function main() {
         RIPPLE_TEST_AGENT: agentPath,
         RIPPLE_DEMO_TIMELINE: path.join(out, 'timeline.json'),
         RIPPLE_TRUEFORGE_URL: baseUrl,
+        RIPPLE_DEMO_AGENT_FALLBACK: agentFallback,
       },
     });
   } catch (err) {

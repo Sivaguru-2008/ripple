@@ -144,6 +144,8 @@
     "models": "node scripts/setup-models.mjs",
     "adapter": "node scripts/gemini-proxy.mjs",
     "task-b": "npm run build && node test/integration/runTaskBEval.mjs",
+    "task-a": "npm run build && node test/integration/runTaskCEval.mjs A",
+    "task-c": "npm run build && node test/integration/runTaskCEval.mjs C",
     "demo:prepare": "node scripts/prepare-demo.mjs"
   },
   "dependencies": {

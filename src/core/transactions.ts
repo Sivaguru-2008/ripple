@@ -940,9 +940,13 @@ export function applyTextEdits(
     const start = base.indexOf(oldText);
     found.push({ start, end: start + oldText.length, text: newText });
   }
-  found.sort((a, b) => a.start - b.start);
+  found.sort((a, b) => a.start - b.start || a.end - b.end);
   for (let k = 1; k < found.length; k++) {
-    if ((found[k]?.start ?? 0) < (found[k - 1]?.end ?? 0)) return { ok: false, error: 'Two edits overlap; merge them into one.' };
+    const prev = found[k - 1];
+    const curr = found[k];
+    if ((curr?.start ?? 0) < (prev?.end ?? 0) && !((curr?.start ?? 0) === (curr?.end ?? 0) && (curr?.start ?? 0) === (prev?.end ?? 0))) {
+      return { ok: false, error: 'Two edits overlap; merge them into one.' };
+    }
   }
   let text = base;
   for (const f of [...found].reverse()) text = text.slice(0, f.start) + f.text + text.slice(f.end);

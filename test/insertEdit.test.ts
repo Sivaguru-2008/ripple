@@ -80,4 +80,15 @@ describe('insert edits', () => {
       { insert_after_line: 1, line_text: 'import click', new_text: 'import json' },
     ]);
   });
+
+  it('allows an insert edit and a replace edit touching at the exact same offset', () => {
+    const r = applyTextEdits(base, [
+      { insert_after_line: 1, line_text: 'import click', new_text: 'import json' },
+      { old_text: '\ndef routes_command():', new_text: '\ndef routes_command_v2():' },
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.text).toContain('import click\nimport json\n\ndef routes_command_v2():');
+    }
+  });
 });

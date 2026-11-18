@@ -27,6 +27,8 @@ export interface PanelStagedSummary {
 export interface AgentPanelState {
   status: 'idle' | 'running' | 'done' | 'cancelled' | 'error';
   statusMessage?: string;
+  /** The request of the current run, shown in the prompt box however the run was started. */
+  prompt?: string;
   sessionId?: string;
   trueforgeBaseUrl: string;
   streamedText: string;
@@ -103,10 +105,11 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.postState();
   }
 
-  public resetRun(sessionId?: string): void {
+  public resetRun(prompt?: string): void {
     this.state.status = 'running';
     this.state.statusMessage = undefined;
-    this.state.sessionId = sessionId;
+    this.state.prompt = prompt;
+    this.state.sessionId = undefined;
     this.state.streamedText = '';
     this.state.toolCalls = [];
     this.state.receipt = undefined;
@@ -462,6 +465,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       const isRunning = state.status === 'running';
       sendBtn.disabled = isRunning;
       cancelBtn.disabled = !isRunning;
+      // A run started from a command shows its request in the box, as if typed there.
+      if (state.prompt && document.activeElement !== promptInput) promptInput.value = state.prompt;
 
       if (state.sessionId) {
         const url = state.trueforgeBaseUrl + '/sessions/' + state.sessionId;

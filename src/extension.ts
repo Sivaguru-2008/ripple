@@ -519,7 +519,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Ripple
 
       output.show(true);
       log(`[agent] prompt: ${instruction}`);
-      panelProvider?.resetRun();
+      panelProvider?.resetRun(instruction);
       panelRunId = undefined;
 
       try {

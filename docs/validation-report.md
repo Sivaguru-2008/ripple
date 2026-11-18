@@ -282,6 +282,29 @@ step, passed on rerun, noted in the runbook).
 Task B tally on real models so far: 2 passes on the primary model (runs 1 and 2), 1 completion
 via fallback (run 4), 1 infrastructure failure since fixed (run 3).
 
+### Tasks A and C as written, in a real VS Code host (18 Nov, 13:00)
+
+New checks `npm run task-a` and `npm run task-c` (`test/integration/taskCSuite.ts`), each on a
+fresh flask 3.1.3 clone. The inline agent now uses `gemini/gemini-3-5-flash-lite`.
+
+| Check | Task A (Gemini 3.5 Flash-Lite) | Task C (unreachable endpoint `127.0.0.1:9`) |
+|---|---|---|
+| Model that finished | `gemini/gemini-3-5-flash-lite`, no fallback | primary failed `Cannot connect to API: bad port`, retried once, then `ollama/qwen-coder-tools-7b` took over with no user action |
+| Duration | 4.3 s | 4.3 s (11.4 s on the first run) |
+| Longest extension-host stall | 176 ms | 186 ms |
+| `git status` while the review was open | clean | clean |
+| `FLASK_DEBUG` off / n / OFF / 1 | False / False / False / True | False / False / False / True |
+| Docstring lists every false value | yes, 2 hunks | yes, 2 hunks |
+| One undo | `git status` clean | `git status` clean |
+
+Also on 18 Nov: changes from a separate agent session were reviewed and committed (path hardening,
+panel CSP, command timeouts, retrieval cache and JS/TS imports); its retrieval cache compared only
+length and the first and last 100 characters and was changed to compare the full text. Six
+documents it wrote (`docs/architecture.md`, `benchmark-report.md`, `improvement-roadmap.md`,
+`known-limitations.md`, `security-review.md`, `technical-audit.md`) were not committed: they
+contain numbers and an environment that were not measured here. 164 of 164 unit tests; full mock
+suite passes.
+
 ## Phase 2: independent verification (`E:\ripple-verify`, `963d790`)
 
 | Check | Result |

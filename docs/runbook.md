@@ -51,6 +51,29 @@ model counts as a failure.
 
 Expect about 10 minutes and 100 to 160 requests on Flash-Lite.
 
+## Tasks A and C
+
+The inline agent (`agents/ripple-inline.json`) uses `gemini/gemini-3-5-flash-lite`; the fallback
+(`ripple.fallbackModel`, default `ollama/qwen-coder-tools-7b`) talks to Ollama directly, not
+through the adapter, so it keeps working when Gemini is unreachable. Ollama must be running.
+
+Automated checks (each on a fresh clone, in a real VS Code host, about 1 minute):
+
+```powershell
+npm run task-a     # Task A on the inline agent's model; fails if the fallback was needed
+npm run task-c     # Task C: TrueForge provider "unreachable" (127.0.0.1:9) as the model
+```
+
+Both check: one review with per-hunk hunks, `git status` clean while it is open,
+`FLASK_DEBUG=off`, `n`, `OFF` false and `1` true after accepting, the docstring lists every
+false value, the longest extension-host stall under 1 s, and one undo leaving `git status` clean.
+Task C also checks that the fallback model took over with no user action.
+
+For the video, Task C by hand: stop the adapter (Ctrl+C in the `npm run stack` terminal, or
+`npm run stack` without it), so Gemini is unreachable; repeat Task A. Ripple retries once, then
+shows "gemini/gemini-3-5-flash-lite failed (Cannot connect to API...); ollama/qwen-coder-tools-7b
+took over"; run `git status` while the review is open (clean), accept, verify, undo.
+
 ## Bottlenecks seen, and what now prevents them
 
 | Seen | Cause | Now |

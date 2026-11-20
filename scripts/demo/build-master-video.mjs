@@ -243,7 +243,7 @@ const taskBEvents = [
   `Dialogue: 1,${ts(0.0)},${ts(7.0)},Callout,,0,0,0,,{\\pos(1860,95)}Prompt submitted: No files named`,
   `Dialogue: 1,${ts(7.3)},${ts(15.5)},Callout,,0,0,0,,{\\pos(1860,95)}Why these files? Git co-change & test pairing`,
   `Dialogue: 1,${ts(15.8)},${ts(34.0)},Callout,,0,0,0,,{\\pos(1860,95)}Staged edits in cli.py, test_cli.py, cli.rst`,
-  `Dialogue: 1,${ts(34.3)},${ts(42.0)},Callout,,0,0,0,,{\\pos(1860,95)}Triggered at 12,000 tokens in TrueForge`,
+  `Dialogue: 1,${ts(34.3)},${ts(42.0)},Callout,,0,0,0,,{\\pos(1860,95)}Triggered at 20,000 tokens in TrueForge`,
   `Dialogue: 1,${ts(42.3)},${ts(50.0)},Callout,,0,0,0,,{\\pos(1860,95)}3 files discovered and modified unprompted`,
   `Dialogue: 1,${ts(50.3)},${ts(57.0)},Callout,,0,0,0,,{\\pos(1860,95)}Inspectable turns, tools & compact summaries`,
   `Dialogue: 1,${ts(57.3)},${ts(68.0)},Callout,,0,0,0,,{\\pos(1860,95)}pytest tests/test_cli.py -> 59 passed`,

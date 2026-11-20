@@ -1,4 +1,4 @@
-# Generates clean, professional, non-overlapping 1920x1080 cards
+﻿# Generates clean, professional, non-overlapping 1920x1080 cards
 param([string]$OutDir = 'e:\ripples\demo-out\2026-11-18T18-07-32')
 
 Add-Type -AssemblyName System.Drawing
@@ -188,7 +188,7 @@ $g.DrawLine($arrowPen, 960, 360, 960, 390)
 # Box 3: TrueForge Agent Runtime
 Draw-RoundedRect $g $penAccent $brushDark 480 390 960 95 10
 $g.DrawString('TrueForge Agent Runtime (Local Server)', $fontSubBold, $brushCyan, 960, 418, $centerFormat)
-$g.DrawString('Autonomous Agent Loop · Tool Approval Lifecycle · Session Compaction (12k threshold) · Turn Events', $fontBody, $brushWhite, 960, 455, $centerFormat)
+$g.DrawString('Autonomous Agent Loop · Tool Approval Lifecycle · Session Compaction (20k threshold) · Turn Events', $fontBody, $brushWhite, 960, 455, $centerFormat)
 
 # Arrow 3: TrueForge -> Model Adapter
 $g.DrawLine($arrowPen, 960, 485, 960, 515)

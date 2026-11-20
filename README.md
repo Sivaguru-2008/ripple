@@ -175,7 +175,7 @@ npm run task-c    # Runs Task C failover evaluation
 
 ## 5. Competition Scorecard & Video Timestamps
 
-Demonstrated in the submission video (runtime 3:53, under 4 min; link submitted on the Techfest portal):
+Demonstrated in the submission video, **[youtu.be/jfi3ru398FM](https://youtu.be/jfi3ru398FM)** (runtime 3:53, under 4 min):
 
 | Criterion | Video Time | Verified Claim & Evidence |
 |---|---|---|

@@ -47,6 +47,26 @@ agent loop in local mode.
   turn while its own last test run failed is sent the failure and asked to fix it (at most
   twice) before the run may finish.
 
+**Design decisions, and what each one costs.**
+
+- **Ranking without embeddings.** Git co-change, test and doc pairing and BM25 each give a reason a
+  person can check ("changed with `cli.py` in 48 commits"), which is what the receipt shows; an
+  embedding score cannot be explained, and needs an index. Cost: a file related only in meaning,
+  with no shared history, name or words, is missed.
+- **A map instead of file text.** Outlines with line ranges let the agent read only the ranges it
+  needs, so 6 files fit in 2,038 tokens and the thread stays small for small models. Cost: more
+  `read_file` round trips, which matters on rate-limited free tiers.
+- **TrueForge approval as the review.** The diff review is driven by the turn's own approval pause,
+  not a side channel, so the session records every decision and a denied write never reaches the
+  MCP server. Cost: the turn stays open while the user reviews.
+- **One write per run.** Accepted hunks are held and written as one `WorkspaceEdit`, so a cancel
+  leaves nothing half-applied and one undo restores every file. Cost: the agent's tests need the
+  files on disk, so accepted edits are written just before a test command runs.
+- **Fallback in the extension, not the adapter.** TrueForge has no built-in failover, so Ripple
+  switches the session's model through the SDK; the second model continues the same thread with
+  the accepted edits, and it works for any provider, including Ollama, which bypasses the adapter.
+  Cost: the failed model gets one retry before the switch.
+
 ## 4. How context is selected
 
 `retrieve_context` ranks files for the request, without embeddings, using (a) co-change in git
@@ -82,14 +102,14 @@ TrueForge's 60 s header timeout. **Switching models:** change `model.name` (`pro
 
 | Criterion | Video | Claim |
 |---|---|---|
-| A1 Inline edit | 00:34 | Diff rendered in the editor with per-hunk accept and reject |
-| A2 Agent mode | 02:14 | Task B: the agent found and edited `cli.py`, `test_cli.py` and `cli.rst` with no files named |
-| A3 Streaming and cancel | 01:18 | Tokens stream in the panel; cancel ends the run in 16 to 35 ms with `git status` clean |
-| B1 Context assembly | 01:39 | Budgeted map retrieval; the receipt shows each file and why it was chosen |
-| B2 Diff safety | 01:11 | Nothing reaches disk before acceptance; one undo restores the files |
-| B3 Resilience | 03:11 | Task C: unreachable endpoint, retry, then the second model takes over; `git status` clean |
-| B4 TrueForge depth | 02:06 | MCP tools, approval opens the review, compaction visible in the session |
-| C1 Video | 00:00 | Tasks A, B, C in order, each verified on screen (3m 53s total, under 4 min) |
+| A1 Inline edit | 00:54 | Task A diff in the editor: 2 hunks, each with its own Accept / Reject (a reject is used at 03:38) |
+| A2 Agent mode | 02:15 | Task B (prompt at 01:39, no files named): the agent found and edited `cli.py`, `test_cli.py` and `cli.rst` |
+| A3 Streaming and cancel | 01:19 | Tokens stream; cancel at 01:24 ends the run (16 to 35 ms in tests) with `git status` clean |
+| B1 Context assembly | 01:39 | Budgeted map retrieval; the receipt shows each file, why it was chosen, tokens and evictions |
+| B2 Diff safety | 00:54 | Nothing reaches disk before acceptance; one undo restores the file (01:18) and all three Task B files (02:49) |
+| B3 Resilience | 03:26 | Task C: Gemini endpoint stopped (02:59), retry, then the local model takes over with no user action; `git status` clean with the review open (03:33) and after reject (03:38) |
+| B4 TrueForge depth | 02:06 | MCP tools; the approval pause opens the review; compaction starts (02:06); the TrueForge session with turns and tool calls (02:23) |
+| C1 Video | 00:00 | Tasks A (00:34), B (01:32), C (02:59) in order, each verified on screen: `FLASK_DEBUG=off` prints False (01:11), pytest passes and masked JSON (02:40 to 02:47); 3m 53s |
 | C2 Write-up | n/a | This document (1 to 3 pages) |
 
 Automated evidence (`docs/validation-report.md`): Task A and Task C pass in a real VS Code host on

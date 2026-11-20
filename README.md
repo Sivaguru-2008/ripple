@@ -179,15 +179,15 @@ Demonstrated in the submission video (runtime 3:53, under 4 min; link submitted 
 
 | Criterion | Video Time | Verified Claim & Evidence |
 |---|---|---|
-| **A1 Inline Edit (10 pts)** | `00:34` | In-editor diff rendering with per-hunk independent Accept/Reject; verified `FLASK_DEBUG=off` $\rightarrow$ `False`. |
-| **A2 Agent Mode (10 pts)** | `02:14` | Autonomous discovery & modification of 3 files (`cli.py`, `test_cli.py`, `cli.rst`) with no files named. |
-| **A3 Streaming & Cancel (10 pts)** | `01:18` | Live token streaming; cancellation aborts turn immediately in 16–35 ms; workspace left 100% clean. |
-| **B1 Context Assembly (15 pts)** | `01:39` | Hard-budgeted map retrieval; receipt panel details file selection rationale and git co-change commits. |
-| **B2 Diff Safety (10 pts)** | `01:11` | Zero silent writes to disk; all hunks staged in-memory; single-action atomic undo restores workspace. |
-| **B3 Resilience (10 pts)** | `03:11` | Primary endpoint failure detected; automatic failover to local Qwen 7B; workspace clean on rejection. |
-| **B4 TrueForge Depth (10 pts)** | `02:06` | Native MCP server over loopback; approval-gated write tool; context compaction visible in TrueForge. |
-| **C1 Demo Video (10 pts)** | `00:00` | Complete Tasks A, B, and C in order; all terminal outputs legible; runtime 3m 53s ($<$ 4 min). |
-| **C2 Write-up (15 pts)** | — | [docs/writeup.pdf](docs/writeup.pdf) — Complete 3-page engineering report covering all 8 required headings. |
+| **A1 Inline Edit (10 pts)** | `00:54` | Task A diff in the editor: 2 hunks, each with its own Accept/Reject (a reject is used at 03:38); `FLASK_DEBUG=off` → `False` at 01:11. |
+| **A2 Agent Mode (10 pts)** | `02:15` | Prompt at 01:39 names no files; the agent found and edited `cli.py`, `test_cli.py`, `cli.rst`. |
+| **A3 Streaming & Cancel (10 pts)** | `01:19` | Tokens stream; cancel at 01:24 ends the turn (16–35 ms in tests); `git status` clean. |
+| **B1 Context Assembly (15 pts)** | `01:39` | Budgeted map retrieval; the receipt shows each file, why it was chosen (git co-change counts), tokens and evictions. |
+| **B2 Diff Safety (10 pts)** | `00:54` | Nothing written before acceptance; one undo restores the file (01:18) and all three Task B files (02:49). |
+| **B3 Resilience (10 pts)** | `03:26` | Gemini endpoint stopped (02:59); retry, then the local Qwen 7B takes over with no user action; `git status` clean (03:33, 03:38). |
+| **B4 TrueForge Depth (10 pts)** | `02:06` | MCP tools over loopback; approval pause opens the review; compaction starts (02:06); TrueForge session with turns and tool calls (02:23). |
+| **C1 Demo Video (10 pts)** | `00:00` | Tasks A (00:34), B (01:32), C (02:59) in order, each verified on screen; pytest and masked JSON at 02:40–02:47; 3m 53s. |
+| **C2 Write-up (15 pts)** | — | [docs/writeup.pdf](docs/writeup.pdf): the 8 required headings, design decisions with their costs, scorecard, limitations. |
 
 ---
 
@@ -202,8 +202,8 @@ ripples/
 │   ├── trueforge.models.example.json  # Sanitized model provider template (zero secrets)
 │   └── ollama/qwen2.5-coder-tools.Modelfile  # Local fallback model (tool-call template)
 ├── docs/
-│   ├── writeup.md                # 8-heading competition write-up draft
-│   ├── writeup.pdf               # Compiled 3-page competition write-up PDF
+│   ├── writeup.md                # 8-heading competition write-up source
+│   ├── writeup.pdf               # Compiled 2-to-3-page competition write-up PDF
 │   ├── runbook.md                # Engineering runbook & troubleshooting manual
 │   └── validation-report.md      # Full verification logs from clean runs
 ├── scripts/

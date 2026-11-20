@@ -4,7 +4,7 @@ Round 1 Submission Write-up · TrueFoundry Forge-a-thon (Techfest IIT Bombay 202
 
 ## 1. Team
 
-Sivaguru Murugan, solo. GitHub: @sivagurumurugan (sivagurumurugan1@gmail.com).
+Sivaguru Murugan, solo. GitHub: @Sivaguru-2008 (sivagurumurugan1@gmail.com).
 
 ## 2. Starting point
 

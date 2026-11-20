@@ -1,15 +1,32 @@
+// Builds docs/writeup.pdf from docs/writeup.md with headless Microsoft Edge (Windows).
+//   node scripts/make-pdf.mjs
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const mdPath = path.resolve('e:/ripples/docs/writeup.md');
-const htmlPath = path.resolve('e:/ripples/docs/writeup.html');
-const pdfPath = path.resolve('e:/ripples/docs/writeup.pdf');
+const docs = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs');
+const mdPath = path.join(docs, 'writeup.md');
+const htmlPath = path.join(docs, 'writeup.html');
+const pdfPath = path.join(docs, 'writeup.pdf');
 
 const md = readFileSync(mdPath, 'utf-8');
 
+/** Joins wrapped source lines into the paragraph or list item they continue. */
+function unwrap(text) {
+  const out = [];
+  for (const raw of text.replace(/\r/g, '').split('\n')) {
+    const line = raw.trim();
+    const starts = !line || /^(#|- |\|)/.test(line);
+    const prev = out.length ? out[out.length - 1] : '';
+    if (!starts && prev && !/^(#|\|)/.test(prev)) out[out.length - 1] = `${prev} ${line}`;
+    else out.push(line);
+  }
+  return out;
+}
+
 function mdToHtml(text) {
-  const lines = text.split('\n');
+  const lines = unwrap(text);
   let html = [];
   let inTable = false;
   let inList = false;
@@ -106,7 +123,7 @@ const fullHtml = `<!DOCTYPE html>
   }
   p {
     margin: 3px 0 5px 0;
-    text-align: justify;
+    text-align: left;
   }
   ul {
     margin: 3px 0 5px 0;
@@ -114,7 +131,7 @@ const fullHtml = `<!DOCTYPE html>
   }
   li {
     margin-bottom: 2px;
-    text-align: justify;
+    text-align: left;
   }
   strong {
     color: #0f172a;
@@ -167,6 +184,6 @@ writeFileSync(htmlPath, fullHtml, 'utf-8');
 console.log(`Generated HTML: ${htmlPath}`);
 
 const edgePath = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
-execFileSync('cmd.exe', ['/c', edgePath, '--headless=new', '--disable-gpu', `--print-to-pdf=${pdfPath}`, `file:///${htmlPath.replace(/\\\\/g, '/')}`], { stdio: 'inherit' });
+execFileSync(edgePath, ['--headless=new', '--disable-gpu', '--no-pdf-header-footer', `--print-to-pdf=${pdfPath}`, pathToFileURL(htmlPath).href], { stdio: 'inherit' });
 
 console.log(`\nGenerated PDF: ${pdfPath}`);

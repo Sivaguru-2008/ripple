@@ -39,8 +39,8 @@ Most AI coding agents write directly to disk, pull entire repositories blindly i
    * **Local Harness Mode.** The agent loop runs entirely on TrueForge (`@truefoundry/trueforge@0.185.1`). The extension never calls any AI model provider directly.
    * **Embedded MCP Tool Server.** Exposes editor capabilities (`read_file`, `search_workspace`, `retrieve_context`, `propose_write`, `run_command`) over `127.0.0.1` with bearer token authentication.
    * **Approval-Gated Tool Lifecycles.** TrueForge's `tool.approval_required` event triggers the inline diff review; human approval resumes the turn.
-   * **Context Compaction.** Automatically summarizes older execution turns when the thread crosses 12,000 input tokens.
-   * **Automatic Multi-Model Failover.** If the primary remote model (Gemini 3.5 Flash-Lite) drops or encounters rate limits, Ripple automatically fails over to a local offline model (Qwen 2.5 Coder 7B on Ollama) without user intervention or workspace corruption.
+   * **Context Compaction.** TrueForge summarizes older turns when the thread crosses 20,000 input tokens (`agents/ripple-agent.json`).
+   * **Automatic Multi-Model Failover.** If the primary model (Gemini 3.5 Flash-Lite for inline edits) fails or hits a rate limit, Ripple retries once, then switches the TrueForge session to a second configured model (`ripple.fallbackModel`, by default Qwen 2.5 Coder 7B on Ollama) without user action or workspace changes.
 
 ---
 
@@ -57,11 +57,12 @@ graph TD
     end
 
     MCP <-->|Tool Execution & Approval| TF[TrueForge Agent Harness<br/>Local Mode :8790]
-    
-    subgraph Model_Routing [Model Adapter Layer]
-        TF <-->|Turns & Streaming| Adapter[Dual-Model Adapter<br/>gemini-proxy.mjs]
-        Adapter -->|Primary| M1[Gemini 3.5 Flash-Lite<br/>Google AI Studio Free Tier]
-        Adapter -.->|Failover on Outage| M2[Qwen 2.5 Coder 7B<br/>Local Ollama 127.0.0.1:11434]
+    Ext <-->|SDK: sessions, turns, events,<br/>fallback = switch session model| TF
+
+    subgraph Models [Models configured in TrueForge]
+        TF <-->|Primary| Adapter[Model adapter<br/>gemini-proxy.mjs :8794]
+        Adapter --> M1[Gemini Flash-Lite<br/>Google AI Studio Free Tier]
+        TF -.->|Fallback model| M2[Qwen 2.5 Coder 7B<br/>Local Ollama 127.0.0.1:11434]
     end
 
     TxMgr -->|Diff Review & Codelens| Review[Per-Hunk Review Tab]
@@ -75,14 +76,19 @@ graph TD
 Follow this setup to run Ripple from scratch. Full operational runbook: [docs/runbook.md](docs/runbook.md).
 
 ### Prerequisites
-- Node.js 22+ or 24+
-- Python 3.10+ with `pytest`
-- (Optional for local fallback) [Ollama](https://ollama.ai) with `qwen2.5-coder:7b`
+- VS Code 1.95+, Git, Node.js 22+ or 24+
+- Python 3.10+ with `pytest` and Flask's dependencies (`python -m pip install pytest werkzeug jinja2 click itsdangerous blinker`)
+- (Optional, for the local fallback model) [Ollama](https://ollama.com), then:
+  ```powershell
+  ollama pull qwen2.5-coder:7b
+  ollama create qwen2.5-coder-tools:7b -f config/ollama/qwen2.5-coder-tools.Modelfile
+  ```
+  The Modelfile only changes the chat template so the 7B model returns real tool calls.
 
 ### 1. Clone & Install Dependencies
 ```powershell
-git clone <repository-url>
-cd ripples
+git clone https://github.com/Sivaguru-2008/ripple.git
+cd ripple
 npm install
 ```
 
@@ -93,6 +99,8 @@ Keys are read from a git-ignored `.env` file (never committed):
 Set-Content -Path ".env" -Value "GEMINI_API_KEY=your_gemini_api_key_here"
 ```
 *(You can obtain a free key at [Google AI Studio](https://aistudio.google.com/)).*
+
+**Using a different model.** Ripple is not tied to Gemini. Add your provider to a copy of the example config (`config/trueforge.models.json`, git-ignored; keys as `${NAME}` from `.env`), or add it in the TrueForge UI, then set `model.name` (`<provider>/<model>`) in `agents/ripple-inline.json` (inline edits) and `agents/ripple-agent.json` (agent mode), and the VS Code setting `ripple.fallbackModel` for the second model. Any OpenAI-compatible endpoint registered in TrueForge works.
 
 ### 3. Prepare the Demonstration Repository
 Clone `pallets/flask` at pinned release tag `3.1.3` (commit `22d92470`):
@@ -108,7 +116,7 @@ npm run stack
 *Starts TrueForge on `http://localhost:8790` with loopback whitelist enabled (`OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1"]'`), boots the adapter, and registers model definitions.*
 
 ### 5. Launch Ripple in VS Code
-Open this folder in VS Code and press **F5** (or run the launch configuration: **Run Ripple on the Flask demo**).
+Open this folder in VS Code, choose the launch configuration **Run Ripple on the Flask demo** in the Run and Debug view, and press **F5**. (The first configuration, *Run Ripple*, opens this repository instead of the Flask clone.) A second VS Code window opens on `../flask-demo` with Ripple loaded.
 - Open any file in the workspace (e.g. `src/flask/helpers.py`).
 - Select code and press `Ctrl+;` for inline edit.
 - Click the Ripple icon in the sidebar to open the Agent Panel.
@@ -123,12 +131,12 @@ The competition evaluation tests Ripple against `pallets/flask` (tag 3.1.3):
 - **Action:** Open `src/flask/helpers.py`, select `get_debug_flag`, press `Ctrl+;`, and instruct:
   > *"Treat the values 'off' and 'n' as false as well, case-insensitively, and update the docstring to list every value that is treated as false."*
 - **Review:** Accept hunks in the diff review tab.
-- **Verification:**
+- **Verification** (in `../flask-demo`):
   ```powershell
-  FLASK_DEBUG=off python -c "from flask.helpers import get_debug_flag; print(get_debug_flag())"
-  # Output: False
+  $env:PYTHONPATH="src"; $env:FLASK_DEBUG="off"; python -c "from flask.helpers import get_debug_flag; print(get_debug_flag())"
+  # Output: False   (bash: PYTHONPATH=src FLASK_DEBUG=off python -c "...")
   ```
-- **Undo:** Trigger `Ripple: Undo Last Applied Change` (`Ctrl+Z`). File reverts cleanly; `git status` is clean.
+- **Undo:** Run `Ripple: Undo Last Applied Change` (or the Undo button in the agent panel). The file reverts in one step; `git status` is clean.
 
 ### Task B — Agent Mode (Transparency & Multi-File Discovery)
 - **Action:** In the agent panel, with **no files named**, instruct:
@@ -136,7 +144,7 @@ The competition evaluation tests Ripple against `pallets/flask` (tag 3.1.3):
 - **Outcome:**
   - Ripple retrieves context and shows the **Context Receipt** in the panel.
   - Automatically identifies and edits **3 files**: `src/flask/cli.py`, `tests/test_cli.py`, and `docs/cli.rst`.
-  - TrueForge compacts context at the 12,000 token threshold.
+  - TrueForge compacts the thread once it passes 20,000 input tokens.
 - **Verification:**
   ```powershell
   pytest tests/test_cli.py -q
@@ -150,9 +158,9 @@ The competition evaluation tests Ripple against `pallets/flask` (tag 3.1.3):
 - **Rollback:** One undo restores all 3 files together; `git status` returns to clean.
 
 ### Task C — Resilience & Automatic Local Fallback
-- **Action:** Stop the primary model endpoint to simulate a connection refusal (`ECONNREFUSED`), then repeat Task A.
+- **Action:** Make the primary model unreachable (stop the adapter, or point the provider at an unreachable endpoint or an invalid key in TrueForge), then repeat Task A.
 - **Outcome:**
-  - Adapter detects connection failure, performs exponential retry, and automatically fails over to local `ollama/qwen-coder-tools-7b`.
+  - The turn ends with a model error in TrueForge; Ripple retries once, then switches the session to the fallback model (`ripple.fallbackModel`, default `ollama/qwen-coder-tools-7b`) with no user action.
   - Editor never blocks; diff tab opens with proposed edit from the local model.
   - Rejecting the proposal leaves the repository completely untouched (`git status` clean).
 
@@ -167,7 +175,7 @@ npm run task-c    # Runs Task C failover evaluation
 
 ## 5. Competition Scorecard & Video Timestamps
 
-Demonstrated in the official submission video: **[Ripple-Demo-Competition.mp4](docs/scorecard.md)** (Runtime: `03:53.2` $\le$ 4 min):
+Demonstrated in the submission video (runtime 3:53, under 4 min; link submitted on the Techfest portal):
 
 | Criterion | Video Time | Verified Claim & Evidence |
 |---|---|---|
@@ -188,10 +196,11 @@ Demonstrated in the official submission video: **[Ripple-Demo-Competition.mp4](d
 ```
 ripples/
 ├── agents/                       # Pinned TrueForge agent specs
-│   ├── ripple-agent.json         # Full multi-file agent (compaction threshold: 12k)
+│   ├── ripple-agent.json         # Full multi-file agent (compaction threshold: 20k)
 │   └── ripple-inline.json        # Lean inline-edit agent
 ├── config/
-│   └── trueforge.models.example.json  # Sanitized model provider template (zero secrets)
+│   ├── trueforge.models.example.json  # Sanitized model provider template (zero secrets)
+│   └── ollama/qwen2.5-coder-tools.Modelfile  # Local fallback model (tool-call template)
 ├── docs/
 │   ├── writeup.md                # 8-heading competition write-up draft
 │   ├── writeup.pdf               # Compiled 3-page competition write-up PDF

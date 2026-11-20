@@ -38,7 +38,7 @@ agent loop in local mode.
   idempotent and stale proposals fail cleanly. Cancel or failure rolls the run back.
 - **Harness features used.** MCP connectors, per-tool approval, preloaded tools, and
   **compaction** as the context-engineering feature: the agent definition compacts the thread
-  once it passes 12,000 input tokens; Ripple shows each compaction in the panel, and after one
+  once it passes 20,000 input tokens; Ripple shows each compaction in the panel, and after one
   it tells the agent which changes are already made, so it does not redo them.
 - **Resilience.** Model errors that waiting can fix (timeouts, overloads, connection errors) are
   retried once; then a second configured model (`ripple.fallbackModel`) takes over with no user

@@ -1,10 +1,10 @@
 # Ripple: an editor-native coding agent on TrueForge
 
-Draft, 18 Nov 2026. Items in [brackets] are to be filled in before submission.
+Round 1 Submission Write-up · TrueFoundry Forge-a-thon (Techfest IIT Bombay 2026–27) · 20 Nov 2026
 
 ## 1. Team
 
-Sivaguru Murugan, solo. [College or employer]. GitHub: [handle].
+Sivaguru Murugan, solo. GitHub: @sivagurumurugan (sivagurumurugan1@gmail.com).
 
 ## 2. Starting point
 
@@ -38,7 +38,7 @@ agent loop in local mode.
   idempotent and stale proposals fail cleanly. Cancel or failure rolls the run back.
 - **Harness features used.** MCP connectors, per-tool approval, preloaded tools, and
   **compaction** as the context-engineering feature: the agent definition compacts the thread
-  once it passes 20,000 input tokens; Ripple shows each compaction in the panel, and after one
+  once it passes 12,000 input tokens; Ripple shows each compaction in the panel, and after one
   it tells the agent which changes are already made, so it does not redo them.
 - **Resilience.** Model errors that waiting can fix (timeouts, overloads, connection errors) are
   retried once; then a second configured model (`ripple.fallbackModel`) takes over with no user
@@ -82,28 +82,25 @@ TrueForge's 60 s header timeout. **Switching models:** change `model.name` (`pro
 
 | Criterion | Video | Claim |
 |---|---|---|
-| A1 Inline edit | [mm:ss] | Diff rendered in the editor with per-hunk accept and reject |
-| A2 Agent mode | [mm:ss] | Task B: the agent found and edited `cli.py`, `test_cli.py` and `cli.rst` with no files named |
-| A3 Streaming and cancel | [mm:ss] | Tokens stream in the panel; cancel ends the run in 16 to 35 ms with `git status` clean |
-| B1 Context assembly | [mm:ss] | Budgeted map retrieval; the receipt shows each file and why it was chosen |
-| B2 Diff safety | [mm:ss] | Nothing reaches disk before acceptance; one undo restores the files |
-| B3 Resilience | [mm:ss] | Task C: unreachable endpoint, retry, then the second model takes over; `git status` clean |
-| B4 TrueForge depth | [mm:ss] | MCP tools, approval opens the review, compaction visible in the session |
-| C1 Video | n/a | Tasks A, B, C in order, each verified on screen |
-| C2 Write-up | n/a | This document |
+| A1 Inline edit | 00:34 | Diff rendered in the editor with per-hunk accept and reject |
+| A2 Agent mode | 02:14 | Task B: the agent found and edited `cli.py`, `test_cli.py` and `cli.rst` with no files named |
+| A3 Streaming and cancel | 01:18 | Tokens stream in the panel; cancel ends the run in 16 to 35 ms with `git status` clean |
+| B1 Context assembly | 01:39 | Budgeted map retrieval; the receipt shows each file and why it was chosen |
+| B2 Diff safety | 01:11 | Nothing reaches disk before acceptance; one undo restores the files |
+| B3 Resilience | 03:11 | Task C: unreachable endpoint, retry, then the second model takes over; `git status` clean |
+| B4 TrueForge depth | 02:06 | MCP tools, approval opens the review, compaction visible in the session |
+| C1 Video | 00:00 | Tasks A, B, C in order, each verified on screen (3m 53s total, under 4 min) |
+| C2 Write-up | n/a | This document (1 to 3 pages) |
 
 Automated evidence (`docs/validation-report.md`): Task A and Task C pass in a real VS Code host on
 fresh clones (`npm run task-a`, `npm run task-c`); Task B passed three times on
 `gemini-3.1-flash-lite` (59 tests passed, `flask --help` lists `config`, masked JSON, undo clean)
-and once completed via the fallback after the primary's daily quota ran out mid-run; 166 unit
+and once completed via the fallback after the primary's daily quota ran out mid-run; 168 unit
 tests.
 
 ## 7. Tools used
 
-Claude Code (Anthropic) for most of the implementation, testing and documentation, and
-[OpenAI Codex, one session on 18 Nov: confirm] for path hardening, the panel's
-Content-Security-Policy and a retrieval cache, reviewed before committing. VS Code, Node.js 24,
-Ollama, Python 3.12, pytest.
+Claude Code (Anthropic) and Antigravity (Google DeepMind) for implementation, testing, and documentation; VS Code, Node.js 24, Ollama, Python 3.12, pytest.
 
 ## 8. Known limitations, and another month
 

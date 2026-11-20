@@ -16,3 +16,5 @@ test/scratch_*
 
 # Demo recordings (large; the final video is uploaded, not committed)
 demo-out/
+
+docs/writeup.html

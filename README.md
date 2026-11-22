@@ -2,7 +2,7 @@
 
 **A VS Code coding agent whose agent loop runs on TrueForge, and which never lets an edit reach disk until you have reviewed it hunk by hunk.**
 
-[![Demo video](https://img.shields.io/badge/Demo_video-3%3A56-red?style=flat-square&logo=youtube)](https://youtu.be/SXWVulFGhJc)
+[![Demo video](https://img.shields.io/badge/Demo_video-3%3A56-red?style=flat-square&logo=youtube)](https://youtu.be/ZeoBrU6ugYo)
 [![Write-up](https://img.shields.io/badge/Write--up-PDF-0284c7?style=flat-square)](docs/writeup.pdf)
 ![TrueForge](https://img.shields.io/badge/TrueForge-0.185.1_local-0284c7?style=flat-square)
 ![Unit tests](https://img.shields.io/badge/unit_tests-168_passing-10b981?style=flat-square)
@@ -12,7 +12,7 @@ Round 1 submission for the TrueFoundry Forge-a-thon (Techfest IIT Bombay 2026–
 
 Ripple is a VS Code extension and a TrueForge client. It creates TrueForge sessions, streams the turn events into an agent panel, and serves the editor's capabilities (read, search, retrieve, propose a write, run a command) to the agent as MCP tools. The agent decides what to read and change; the extension decides nothing on its behalf and never calls a model provider. Every proposed change is staged in memory, opened as a per-hunk review when TrueForge pauses for tool approval, and written as one undoable `WorkspaceEdit` only after you accept it. When the configured model fails, a second configured model takes over without any action from you, and the workspace stays unchanged.
 
-**Watch:** [demo video, 3:56](https://youtu.be/SXWVulFGhJc) · **Read:** [write-up PDF](docs/writeup.pdf) · [architecture](docs/architecture.md) · **Run:** [judge walkthrough](docs/judge-walkthrough.md)
+**Watch:** [demo video, 3:56](https://youtu.be/ZeoBrU6ugYo) · **Read:** [write-up PDF](docs/writeup.pdf) · [architecture](docs/architecture.md) · **Run:** [judge walkthrough](docs/judge-walkthrough.md)
 
 ---
 
@@ -42,7 +42,7 @@ The extension never talks to a model. Details and a sequence diagram: [docs/arch
 
 ## What a judge can verify
 
-Video timestamps refer to the submitted [3:56 demo](https://youtu.be/SXWVulFGhJc) and were checked frame by frame. "Automated" means the repository's own end-to-end check (`npm run task-a`, `task-b`, `task-c`) in a real VS Code window on a fresh `pallets/flask` 3.1.3 clone.
+Video timestamps refer to the submitted [3:56 demo](https://youtu.be/ZeoBrU6ugYo) and were checked frame by frame. "Automated" means the repository's own end-to-end check (`npm run task-a`, `task-b`, `task-c`) in a real VS Code window on a fresh `pallets/flask` 3.1.3 clone.
 
 | Task | What to look for | In the video | Evidence |
 |---|---|---|---|

@@ -1,6 +1,6 @@
 # Screenshots to capture
 
-No screenshots are committed yet. Add real ones here; do not use mock-ups. Each moment below already appears in the submitted [demo video](https://youtu.be/SXWVulFGhJc), so you can capture it from the running extension (see the [judge walkthrough](../judge-walkthrough.md)) or export the frame from the original recording at the timestamp given.
+No screenshots are committed yet. Add real ones here; do not use mock-ups. Each moment below already appears in the submitted [demo video](https://youtu.be/ZeoBrU6ugYo), so you can capture it from the running extension (see the [judge walkthrough](../judge-walkthrough.md)) or export the frame from the original recording at the timestamp given.
 
 | File name | What it must show | Video moment |
 |---|---|---|

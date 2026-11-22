@@ -27,7 +27,7 @@ These are repository settings, not files; none were changed.
 VS Code coding agent on TrueForge: per-hunk reviewed edits, a context receipt for every retrieval, and automatic model fallback.
 ```
 
-**Website:** `https://youtu.be/SXWVulFGhJc` (the demo video).
+**Website:** `https://youtu.be/ZeoBrU6ugYo` (the demo video).
 
 **Topics:** `vscode-extension`, `coding-agent`, `trueforge`, `mcp`, `model-context-protocol`, `typescript`, `code-review`, `retrieval`, `developer-tools`, `forge-a-thon`.
 
@@ -38,7 +38,7 @@ VS Code coding agent on TrueForge: per-hunk reviewed edits, a context receipt fo
   ```
   The code, agent definitions and write-up as submitted for Round 1 of the TrueFoundry Forge-a-thon (Techfest IIT Bombay 2026-27) on 20 Nov 2026.
 
-  - Demo video (3:56): https://youtu.be/SXWVulFGhJc
+  - Demo video (3:56): https://youtu.be/ZeoBrU6ugYo
   - Write-up: docs/writeup.pdf
   - TrueForge 0.185.1, @truefoundry/trueforge-sdk 0.185.0
   - 168 unit tests; Tasks A and C pass in the automated VS Code checks; Task B passed 3 of 7 attempts on free Gemini Flash-Lite (see Known limitations)

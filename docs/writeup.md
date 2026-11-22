@@ -102,14 +102,14 @@ TrueForge's 60 s header timeout. **Switching models:** change `model.name` (`pro
 
 | Criterion | Video | Claim |
 |---|---|---|
-| A1 Inline edit | 00:54 | Task A diff in the editor: 2 hunks, each with its own Accept / Reject (a reject is used at 03:38) |
-| A2 Agent mode | 02:15 | Task B (prompt at 01:39, no files named): the agent found and edited `cli.py`, `test_cli.py` and `cli.rst` |
-| A3 Streaming and cancel | 01:19 | Tokens stream; cancel at 01:24 ends the run (16 to 35 ms in tests) with `git status` clean |
-| B1 Context assembly | 01:39 | Budgeted map retrieval; the receipt shows each file, why it was chosen, tokens and evictions |
-| B2 Diff safety | 00:54 | Nothing reaches disk before acceptance; one undo restores the file (01:18) and all three Task B files (02:49) |
-| B3 Resilience | 03:26 | Task C: Gemini endpoint stopped (02:59), retry, then the local model takes over with no user action; `git status` clean with the review open (03:33) and after reject (03:38) |
-| B4 TrueForge depth | 02:06 | MCP tools; the approval pause opens the review; compaction starts (02:06); the TrueForge session with turns and tool calls (02:23) |
-| C1 Video | 00:00 | Tasks A (00:34), B (01:32), C (02:59) in order, each verified on screen: `FLASK_DEBUG=off` prints False (01:11), pytest passes and masked JSON (02:40 to 02:47); 3m 53s |
+| A1 Inline edit | 00:32 | Task A diff in the editor: 2 hunks, each with its own Accept / Reject (a reject is used at 03:42) |
+| A2 Agent mode | 02:04 | Task B (prompt at 01:24, no files named): the agent found and edited `cli.py`, `test_cli.py` and `cli.rst` |
+| A3 Streaming and cancel | 01:08 | Tokens stream; cancel at 01:13 ends the run (16 to 35 ms in tests) with `git status` clean |
+| B1 Context assembly | 01:28 | Budgeted map retrieval; the receipt shows each file, why it was chosen, tokens and evictions |
+| B2 Diff safety | 00:32 | Nothing reaches disk before acceptance; one undo restores the file (01:00) and all three Task B files (02:58) |
+| B3 Resilience | 03:16 | Task C: Gemini endpoint stopped (03:06), retry, then the local model takes over with no user action; `git status` clean with the review open (03:38) and after reject (03:44) |
+| B4 TrueForge depth | 01:50 | MCP tools; the approval pause opens the review; compaction starts (01:50); TrueForge session with all tool calls and the compaction step (02:18, from a 22 Nov rerun of Task B on the same model) |
+| C1 Video | 00:00 | Tasks A (00:20), B (01:18), C (03:02) in order, each verified on screen: `FLASK_DEBUG=off` prints False (00:50), pytest passes (02:30), masked JSON (02:42); 3m 56s |
 | C2 Write-up | n/a | This document (1 to 3 pages) |
 
 Automated evidence (`docs/validation-report.md`): Task A and Task C pass in a real VS Code host on
@@ -128,7 +128,9 @@ Claude Code (Anthropic) and Antigravity (Google DeepMind) for implementation, te
   model requests; free daily quotas allow about 3 runs per model per day.
 - **Pass rate not established.** Over 17 and 18 Nov, Task B on free Gemini Flash-Lite passed 3
   times, was completed once by the fallback model, and failed 3 times (a provider timeout, an
-  iteration limit, and finishing with broken tests; each addressed since). That is not a rate.
+  iteration limit, and finishing with broken tests; each addressed since). On 22 Nov, rerun to
+  film the TrueForge session, it failed once (broke 4 existing route tests) and then passed.
+  That is not a rate.
   One pass took a design shortcut, registering the command on each app's own CLI group.
 - **Small local models** do Task A but not Task B; the 7B model writes wrong edits.
 - **The adapter is an extra process** that must be running for Gemini, Groq and OpenRouter.

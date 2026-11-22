@@ -2,7 +2,7 @@
 
 **A VS Code coding agent whose agent loop runs on TrueForge, and which never lets an edit reach disk until you have reviewed it hunk by hunk.**
 
-[![Demo video](https://img.shields.io/badge/Demo_video-3%3A53-red?style=flat-square&logo=youtube)](https://youtu.be/SXWVulFGhJc)
+[![Demo video](https://img.shields.io/badge/Demo_video-3%3A56-red?style=flat-square&logo=youtube)](https://youtu.be/SXWVulFGhJc)
 [![Write-up](https://img.shields.io/badge/Write--up-PDF-0284c7?style=flat-square)](docs/writeup.pdf)
 ![TrueForge](https://img.shields.io/badge/TrueForge-0.185.1_local-0284c7?style=flat-square)
 ![Unit tests](https://img.shields.io/badge/unit_tests-168_passing-10b981?style=flat-square)
@@ -12,7 +12,7 @@ Round 1 submission for the TrueFoundry Forge-a-thon (Techfest IIT Bombay 2026–
 
 Ripple is a VS Code extension and a TrueForge client. It creates TrueForge sessions, streams the turn events into an agent panel, and serves the editor's capabilities (read, search, retrieve, propose a write, run a command) to the agent as MCP tools. The agent decides what to read and change; the extension decides nothing on its behalf and never calls a model provider. Every proposed change is staged in memory, opened as a per-hunk review when TrueForge pauses for tool approval, and written as one undoable `WorkspaceEdit` only after you accept it. When the configured model fails, a second configured model takes over without any action from you, and the workspace stays unchanged.
 
-**Watch:** [demo video, 3:53](https://youtu.be/SXWVulFGhJc) · **Read:** [write-up PDF](docs/writeup.pdf) · [architecture](docs/architecture.md) · **Run:** [judge walkthrough](docs/judge-walkthrough.md)
+**Watch:** [demo video, 3:56](https://youtu.be/SXWVulFGhJc) · **Read:** [write-up PDF](docs/writeup.pdf) · [architecture](docs/architecture.md) · **Run:** [judge walkthrough](docs/judge-walkthrough.md)
 
 ---
 
@@ -42,14 +42,14 @@ The extension never talks to a model. Details and a sequence diagram: [docs/arch
 
 ## What a judge can verify
 
-Video timestamps refer to the submitted [3:53 demo](https://youtu.be/SXWVulFGhJc) and were checked frame by frame. "Automated" means the repository's own end-to-end check (`npm run task-a`, `task-b`, `task-c`) in a real VS Code window on a fresh `pallets/flask` 3.1.3 clone.
+Video timestamps refer to the submitted [3:56 demo](https://youtu.be/SXWVulFGhJc) and were checked frame by frame. "Automated" means the repository's own end-to-end check (`npm run task-a`, `task-b`, `task-c`) in a real VS Code window on a fresh `pallets/flask` 3.1.3 clone.
 
 | Task | What to look for | In the video | Evidence |
 |---|---|---|---|
-| **A. Inline edit** (`get_debug_flag`) | 2-hunk diff in the editor, each hunk with its own Accept / Reject; `FLASK_DEBUG=off` prints `False`; one undo, `git status` clean | diff 00:54, verify 01:11, undo 01:18; a reject is shown at 03:38 | Automated check passed on 18 Nov ([AGENTS.md §11](AGENTS.md#11-status)), and again after submission from a fresh clone of this repository (21 Nov, [walkthrough](docs/judge-walkthrough.md#evidence)) |
-| **Cancel** | Tokens stream, then cancel ends the run and `git status` is clean | 01:19 to 01:24 | Cancel ended the turn in 11 to 36 ms with `git status` clean (16 Nov, [AGENTS.md §11](AGENTS.md#11-status)) |
-| **B. Agent mode** (no files named) | Receipt with a reason per file; approval pause opens the review; the agent edits `src/flask/cli.py`, `tests/test_cli.py`, `docs/cli.rst`; TrueForge session with turns and tool calls; `pytest tests/test_cli.py -q` passes; `flask config` prints masked JSON; one undo restores all three files | prompt 01:39, review and compaction 02:06, three files 02:15, session 02:23, tests and JSON 02:40 to 02:47, undo 02:49 | Passed 3 times on `gemini-3.1-flash-lite`, finished once by the fallback model, failed 3 times (17–18 Nov, [write-up §8](docs/writeup.md#8-known-limitations-and-another-month)). That is not a pass rate. |
-| **C. Resilience** | Primary model unreachable; the fallback model takes over with no click; editor responsive; `git status` clean during the review and after reject | endpoint stopped 02:59, fallback 03:26, clean 03:33 and 03:38 | Automated check passed on 18 Nov and again after submission (21 Nov): fallback to `ollama/qwen-coder-tools-7b`, longest extension-host stall 235 ms |
+| **A. Inline edit** (`get_debug_flag`) | 2-hunk diff in the editor, each hunk with its own Accept / Reject; `FLASK_DEBUG=off` prints `False`; one undo, `git status` clean | diff 00:32, verify 00:50, undo 01:00; a reject is shown at 03:42 | Automated check passed on 18 Nov ([AGENTS.md §11](AGENTS.md#11-status)), and again after submission from a fresh clone of this repository (21 Nov, [walkthrough](docs/judge-walkthrough.md#evidence)) |
+| **Cancel** | Tokens stream, then cancel ends the run and `git status` is clean | 01:08 to 01:16 | Cancel ended the turn in 11 to 36 ms with `git status` clean (16 Nov, [AGENTS.md §11](AGENTS.md#11-status)) |
+| **B. Agent mode** (no files named) | Receipt with a reason per file; approval pause opens the review; the agent edits `src/flask/cli.py`, `tests/test_cli.py`, `docs/cli.rst`; TrueForge session with turns and tool calls; `pytest tests/test_cli.py -q` passes; `flask config` prints masked JSON; one undo restores all three files | prompt 01:24, review 01:34, compaction 01:50, three files 02:04, TrueForge session 02:12 and all tool calls with the compaction step 02:18 (22 Nov rerun, same model), tests 02:30, JSON 02:42, undo 02:58 | Passed 3 times on `gemini-3.1-flash-lite`, finished once by the fallback model, failed 3 times (17–18 Nov); on 22 Nov failed once and passed once ([write-up §8](docs/writeup.md#8-known-limitations-and-another-month)). That is not a pass rate. |
+| **C. Resilience** | Primary model unreachable; the fallback model takes over with no click; editor responsive; `git status` clean during the review and after reject | endpoint stopped 03:06, fallback 03:16, clean 03:38 and 03:44 | Automated check passed on 18 Nov and again after submission (21 Nov): fallback to `ollama/qwen-coder-tools-7b`, longest extension-host stall 235 ms |
 
 ## Quick start
 

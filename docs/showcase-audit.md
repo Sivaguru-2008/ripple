@@ -38,13 +38,13 @@ VS Code coding agent on TrueForge: per-hunk reviewed edits, a context receipt fo
   ```
   The code, agent definitions and write-up as submitted for Round 1 of the TrueFoundry Forge-a-thon (Techfest IIT Bombay 2026-27) on 20 Nov 2026.
 
-  - Demo video (3:53): https://youtu.be/SXWVulFGhJc
+  - Demo video (3:56): https://youtu.be/SXWVulFGhJc
   - Write-up: docs/writeup.pdf
   - TrueForge 0.185.1, @truefoundry/trueforge-sdk 0.185.0
   - 168 unit tests; Tasks A and C pass in the automated VS Code checks; Task B passed 3 of 7 attempts on free Gemini Flash-Lite (see Known limitations)
   ```
 
-**Social preview** (Settings → General → Social preview): a PNG or JPG of 1280×640 px, under 1 MB, with the name "Ripple", the tagline, and one real frame of the per-hunk review (video 00:54). No generated UI.
+**Social preview** (Settings → General → Social preview): a PNG or JPG of 1280×640 px, under 1 MB, with the name "Ripple", the tagline, and one real frame of the per-hunk review (video 00:32). No generated UI.
 
 **Other:** turn off Wiki (unused) to keep navigation short; keep Issues on if you want feedback.
 

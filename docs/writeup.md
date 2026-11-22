@@ -1,10 +1,10 @@
 # Ripple: an editor-native coding agent on TrueForge
 
-Round 1 Submission Write-up · TrueFoundry Forge-a-thon (Techfest IIT Bombay 2026–27) · 20 Nov 2026
+Round 1 Submission Write-up · TrueFoundry Forge-a-thon (Techfest IIT Bombay 2026–27) · submitted 20 Nov 2026, updated 22 Nov 2026
 
 ## 1. Team
 
-Sivaguru Murugan, solo. GitHub: @Sivaguru-2008 (sivagurumurugan1@gmail.com).
+Sivaguru Murugan, solo. GitHub: @Sivaguru-2008.
 
 ## 2. Starting point
 
@@ -42,8 +42,8 @@ agent loop in local mode.
   it tells the agent which changes are already made, so it does not redo them.
 - **Resilience.** Model errors that waiting can fix (timeouts, overloads, connection errors) are
   retried once; then a second configured model (`ripple.fallbackModel`) takes over with no user
-  action. An interrupted agent run keeps the edits the user already accepted and the next model
-  continues from them; if every attempt fails, everything is rolled back. An agent that ends its
+  action, in a new TrueForge session on the same edit transaction. An interrupted agent run keeps
+  the edits the user already accepted, and the new session is told which changes are already made; if every attempt fails, everything is rolled back. An agent that ends its
   turn while its own last test run failed is sent the failure and asked to fix it (at most
   twice) before the run may finish.
 
@@ -62,10 +62,11 @@ agent loop in local mode.
 - **One write per run.** Accepted hunks are held and written as one `WorkspaceEdit`, so a cancel
   leaves nothing half-applied and one undo restores every file. Cost: the agent's tests need the
   files on disk, so accepted edits are written just before a test command runs.
-- **Fallback in the extension, not the adapter.** TrueForge has no built-in failover, so Ripple
-  switches the session's model through the SDK; the second model continues the same thread with
-  the accepted edits, and it works for any provider, including Ollama, which bypasses the adapter.
-  Cost: the failed model gets one retry before the switch.
+- **Fallback in the extension, not the proxy.** TrueForge has no built-in failover, so Ripple
+  opens a new session with the second model on the same edit transaction and tells it which
+  accepted changes are already made; this works for any provider, including Ollama, which bypasses
+  the proxy. Cost: the new session starts without the failed thread's history, and the fallback
+  is usually a weaker model (the local 7B does Task A but not Task B).
 
 ## 4. How context is selected
 
@@ -85,9 +86,9 @@ src/flask/cli.py in 48 commits"), tokens, and what was evicted and why.
 
 | Model | Where it runs | Used for | Cost |
 |---|---|---|---|
-| `gemini-3.1-flash-lite` | Google AI Studio, free tier | agent mode (Task B) | $0 |
-| `gemini-3.5-flash-lite` | Google AI Studio, free tier | inline edits (Task A); agent fallback | $0 |
-| `qwen2.5-coder` 7B, tool-call template | Ollama on the laptop (RTX 5050, 8 GB) | inline fallback (Task C) | $0 |
+| `gemini/gemini-3-1-flash-lite` | Google AI Studio, free tier | agent mode (Task B) | $0 |
+| `gemini/gemini-3-5-flash-lite` | Google AI Studio, free tier | inline edits (Task A); agent fallback | $0 |
+| `ollama/qwen-coder-tools-7b` (qwen2.5-coder 7B, tool-call template) | Ollama on the laptop (RTX 5050, 8 GB) | inline fallback (Task C) | $0 |
 | tried: `gemini-3-flash-preview`, `groq/gpt-oss-120b`, OpenRouter `nemotron-3-ultra:free` | free tiers | early Task B runs; stopped by quotas | $0 |
 
 All models are configured in TrueForge only. `npm run models` registers the providers in
@@ -113,14 +114,14 @@ TrueForge's 60 s header timeout. **Switching models:** change `model.name` (`pro
 | C2 Write-up | n/a | This document (1 to 3 pages) |
 
 Automated evidence (`docs/validation-report.md`): Task A and Task C pass in a real VS Code host on
-fresh clones (`npm run task-a`, `npm run task-c`); Task B passed three times on
-`gemini-3.1-flash-lite` (59 tests passed, `flask --help` lists `config`, masked JSON, undo clean)
-and once completed via the fallback after the primary's daily quota ran out mid-run; 168 unit
-tests.
+fresh clones (`npm run task-a`, `npm run task-c`); Task B (`npm run task-b`) passed four times on
+`gemini/gemini-3-1-flash-lite` (59 tests passed, `flask --help` lists `config`, masked JSON, undo
+clean), was completed once by the fallback after the primary's daily quota ran out mid-run, and
+failed four times (section 8); 168 unit tests.
 
 ## 7. Tools used
 
-Claude Code (Anthropic) and Antigravity (Google DeepMind) for implementation, testing, and documentation; VS Code, Node.js 24, Ollama, Python 3.12, pytest.
+Claude Code (Anthropic), Antigravity (Google DeepMind) and Codex (OpenAI) for implementation, testing, and documentation; VS Code, Node.js 24, Ollama, Python 3.12, pytest.
 
 ## 8. Known limitations, and another month
 
@@ -130,14 +131,14 @@ Claude Code (Anthropic) and Antigravity (Google DeepMind) for implementation, te
   times, was completed once by the fallback model, and failed 3 times (a provider timeout, an
   iteration limit, and finishing with broken tests; each addressed since). On 22 Nov, rerun to
   film the TrueForge session, it failed once (broke 4 existing route tests) and then passed.
-  That is not a rate.
-  One pass took a design shortcut, registering the command on each app's own CLI group.
+  Four passes in nine runs is not a rate, and one pass took a design shortcut (registering the
+  command on each app's own CLI group).
 - **Small local models** do Task A but not Task B; the 7B model writes wrong edits.
-- **The adapter is an extra process** that must be running for Gemini, Groq and OpenRouter.
+- **The proxy (`scripts/gemini-proxy.mjs`) is an extra process** that must be running for Gemini, Groq and OpenRouter.
 - **Tested on Windows only**; TrueForge is pinned to 0.185.1, not `@latest`.
 - **One flaky automated check** (VS Code's own undo command depends on window focus).
 
 With another month: measure the Task B pass rate over many runs and models; a scout subagent
 that reads large files in its own context; a repo-map signal (PageRank over imports) for
 retrieval; retrieving an existing test of a similar feature before the agent writes its own;
-cross-platform tests; and packaging the adapter's fixes as upstream TrueForge contributions.
+cross-platform tests; and packaging the proxy's fixes as upstream TrueForge contributions.

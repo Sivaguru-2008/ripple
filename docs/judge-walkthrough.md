@@ -152,7 +152,7 @@ TrueForge must be running (`npm run stack`). `RIPPLE_TEST_MODEL` and `RIPPLE_FAL
 | Date | Check | Result | Source |
 |---|---|---|---|
 | 16 Nov | Approval allow and deny, cancel | Denied calls never reach the MCP server; cancel ends the turn in 11 to 36 ms with `git status` clean | [AGENTS.md §9 and §11](../AGENTS.md#11-status) |
-| 17–18 Nov | Task B on `gemini-3.1-flash-lite` | 3 passes, 1 finished by the fallback model, 3 failures | [write-up §8](writeup.md#8-known-limitations-and-another-month), [AGENTS.md §11](../AGENTS.md#11-status) |
+| 17–18 Nov | Task B on `gemini-3.1-flash-lite` | 3 passes, 1 finished by the fallback model, 3 failures | [write-up §8](writeup.md#8-known-limitations), [AGENTS.md §11](../AGENTS.md#11-status) |
 | 18 Nov | `npm run task-a`, `npm run task-c` | Both passed; Task C fallback with longest extension-host stall 186 ms | [AGENTS.md §11](../AGENTS.md#11-status) |
 | 18 Nov | Demo recording | Tasks A, B, C as in the [video](https://youtu.be/ZeoBrU6ugYo) | [AGENTS.md §11](../AGENTS.md#11-status) |
 | 21 Nov, after submission | Fresh clone of this repository: `npm ci`, typecheck, unit tests, build | All passed; 168 of 168 tests | re-check of the submitted code |

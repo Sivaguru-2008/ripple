@@ -48,7 +48,7 @@ Video timestamps refer to the submitted [3:56 demo](https://youtu.be/ZeoBrU6ugYo
 |---|---|---|---|
 | **A. Inline edit** (`get_debug_flag`) | 2-hunk diff in the editor, each hunk with its own Accept / Reject; `FLASK_DEBUG=off` prints `False`; one undo, `git status` clean | diff 00:32, verify 00:50, undo 01:00; a reject is shown at 03:42 | Automated check passed on 18 Nov ([AGENTS.md §11](AGENTS.md#11-status)), and again after submission from a fresh clone of this repository (21 Nov, [walkthrough](docs/judge-walkthrough.md#evidence)) |
 | **Cancel** | Tokens stream, then cancel ends the run and `git status` is clean | 01:08 to 01:16 | Cancel ended the turn in 11 to 36 ms with `git status` clean (16 Nov, [AGENTS.md §11](AGENTS.md#11-status)) |
-| **B. Agent mode** (no files named) | Receipt with a reason per file; approval pause opens the review; the agent edits `src/flask/cli.py`, `tests/test_cli.py`, `docs/cli.rst`; TrueForge session with turns and tool calls; `pytest tests/test_cli.py -q` passes; `flask config` prints masked JSON; one undo restores all three files | prompt 01:24, review 01:34, compaction 01:50, three files 02:04, TrueForge session 02:12 and all tool calls with the compaction step 02:18 (22 Nov rerun, same model), tests 02:30, JSON 02:42, undo 02:58 | Passed 3 times on `gemini-3.1-flash-lite`, finished once by the fallback model, failed 3 times (17–18 Nov); on 22 Nov failed once and passed once ([write-up §8](docs/writeup.md#8-known-limitations-and-another-month)). That is not a pass rate. |
+| **B. Agent mode** (no files named) | Receipt with a reason per file; approval pause opens the review; the agent edits `src/flask/cli.py`, `tests/test_cli.py`, `docs/cli.rst`; TrueForge session with turns and tool calls; `pytest tests/test_cli.py -q` passes; `flask config` prints masked JSON; one undo restores all three files | prompt 01:24, review 01:34, compaction 01:50, three files 02:04, TrueForge session 02:12 and all tool calls with the compaction step 02:18 (22 Nov rerun, same model), tests 02:30, JSON 02:42, undo 02:58 | Passed 3 times on `gemini-3.1-flash-lite`, finished once by the fallback model, failed 3 times (17–18 Nov); on 22 Nov failed once and passed once ([write-up §8](docs/writeup.md#8-known-limitations)). That is not a pass rate. |
 | **C. Resilience** | Primary model unreachable; the fallback model takes over with no click; editor responsive; `git status` clean during the review and after reject | endpoint stopped 03:06, fallback 03:16, clean 03:38 and 03:44 | Automated check passed on 18 Nov and again after submission (21 Nov): fallback to `ollama/qwen-coder-tools-7b`, longest extension-host stall 235 ms |
 
 ## Quick start
@@ -90,7 +90,7 @@ Then open this folder in VS Code, pick the launch configuration **Run Ripple on 
 - **Tested on Windows only.** TrueForge is pinned to 0.185.1.
 - **One automated check is flaky**: VS Code's own undo command depends on window focus.
 
-More, with what another month would add: [write-up §8](docs/writeup.md#8-known-limitations-and-another-month).
+More, with what another month would add: [write-up §8](docs/writeup.md#8-known-limitations).
 
 ## Repository map
 

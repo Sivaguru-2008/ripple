@@ -123,7 +123,7 @@ failed four times (section 8); 168 unit tests.
 
 Claude Code (Anthropic), Antigravity (Google DeepMind) and Codex (OpenAI) for implementation, testing, and documentation; VS Code, Node.js 24, Ollama, Python 3.12, pytest.
 
-## 8. Known limitations, and another month
+## 8. Known limitations
 
 - **Slow and request-hungry on free models.** A Task B run takes 5 to 16 minutes and 70 to 160
   model requests; free daily quotas allow about 3 runs per model per day.
